@@ -1,0 +1,34 @@
+{
+  "name": "sky-dispatch-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "sky-dispatch 低空无人机配送调度仿真平台 - 前端（Vue3 + Ant Design Vue + Leaflet + ECharts）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173",
+    "type-check": "vue-tsc --noEmit",
+    "fetch:geo": "node scripts/fetch-china-geo.mjs",
+    "postinstall": "node scripts/fetch-china-geo.mjs || exit 0"
+  },
+  "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
+    "@types/three": "^0.186.0",
+    "ant-design-vue": "^4.2.6",
+    "dayjs": "^1.11.13",
+    "echarts": "^5.5.1",
+    "leaflet": "^1.9.4",
+    "three": "^0.186.1",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@types/leaflet": "^1.9.15",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

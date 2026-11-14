@@ -1,0 +1,109 @@
+# =============================================================================
+#  sky-dispatch 后端主配置
+#  不同环境用 profile 区分：dev（H2 内存库，零依赖演示）/ postgres（真库 + Flyway）
+#  启动方式：
+#    mvn spring-boot:run                     # 默认 dev，H2 内存库 + 演示数据
+#    mvn spring-boot:run -Dspring-boot.run.profiles=postgres
+# =============================================================================
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: sky-dispatch-backend
+  profiles:
+    active: ${SKY_PROFILE:dev}
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+  jpa:
+    open-in-view: false          # 关掉 OSIV：Service 之外不许懒加载，避免难以排查的问题
+    properties:
+      hibernate:
+        # 批量写入/更新：遥测、事件、任务状态每拍都会产生多条 DML，
+        # 合批后能显著降低数据库 round-trip（IDENTITY 主键的 insert 仍无法合批，update 可以）
+        jdbc:
+          batch_size: 50
+          order_inserts: true
+          order_updates: true
+          batch_versioned_data: true
+        # 懒加载关联按批抓取，兜住未显式 join fetch 的路径
+        default_batch_fetch_size: 50
+  threads:
+    virtual:
+      enabled: true              # Java 21 虚拟线程：IO 密集（数据库 + 算法服务调用）受益明显
+
+# ---------------------------------------------------------------------------
+# 业务自定义配置（绑定到 com.skydispatch.config.SkyProperties）
+# ---------------------------------------------------------------------------
+sky:
+  # Python 算法服务
+  algorithm:
+    base-url: ${SKY_ALGO_URL:http://localhost:8000}
+    connect-timeout-ms: 2000
+    read-timeout-ms: 10000
+    # 置为 false 时降级为内置直线插值路径，方便离线开发。
+    # 可用环境变量 SKY_ALGO_ENABLED 覆盖；dev profile 默认关闭（见 application-dev.yml），
+    # 保证不装 Python 也能跑通"下单→派单→仿真"整条链路。
+    enabled: ${SKY_ALGO_ENABLED:true}
+
+  # 仿真引擎
+  simulation:
+    enabled: true
+    tick-ms: 1000                # 每 1000ms 推进一拍
+    speed-factor: 8.0            # 8 倍速：1 秒真实时间 = 8 秒仿真时间（一条 12km 任务约 3 分钟跑完）
+    conflict-check-every-ticks: 5
+    kpi-broadcast-every-ticks: 5
+    telemetry-persist-every-ticks: 2
+    auto-dispatch-interval-ms: 10000   # 自动扫单派单周期（界面上可用「自动派单」开关关掉）
+
+  # 调度策略默认参数
+  dispatch:
+    default-strategy: NEAREST_AVAILABLE
+    # 搜索半径放宽到 30km：让"够不够电"成为真正的门槛，
+    # 而不是用一个拍脑袋的距离先把远机一票否决。续航校验会按
+    # "空载调机 + 去程载货 + 回程空载"的完整能耗判断，飞不到的飞机照样被淘汰，
+    # 但淘汰原因会准确得多（写清"往返需 X Wh > 可用 Y Wh"）。
+    search-radius-m: 30000.0
+    min-battery-reserve-pct: 25  # 落地后必须保留的电量（安全冗余）
+    weight-distance: 1.0         # 评分权重：距离
+    weight-battery: 0.5          # 评分权重：电量
+    weight-load: 0.3             # 评分权重：负载均衡
+
+  # 飞行与栅格参数
+  flight:
+    default-altitude-m: 80.0
+    grid-size-m: 50.0
+    keep-out-margin-m: 30.0
+    # 飞行剖面：让仿真里的无人机"会起飞、会爬升、会巡航、会下降、会降落"
+    # 爬升 4 m/s、下降 3 m/s，换算成水平距离后航线两端各有一段平滑的爬升/下降过渡
+    climb-speed-mps: 4.0
+    descent-speed-mps: 3.0
+    speed-ramp-m: 80.0
+
+  # 演示数据
+  bootstrap:
+    seed-demo-data: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,env
+  endpoint:
+    health:
+      show-details: always
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    tags-sorter: alpha
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    root: INFO
+    com.skydispatch: DEBUG

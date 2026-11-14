@@ -1,0 +1,73 @@
+# =============================================================================
+#  Render Blueprint：sky-dispatch 全栈部署
+#
+#  架构：
+#    sky-dispatch            Docker Web（Vue 静态资源 + Spring Boot API/WS）
+#    sky-dispatch-algorithm  Docker Web（FastAPI A* 路径规划 / 冲突检测）
+#    sky-dispatch-db         Render Postgres（Flyway 自动建表 + 种子数据）
+#
+#  说明：
+#  - 前端由后端同源托管，因此不需要 Nginx、CORS 或额外的前端服务。
+#  - 后端通过公网 HTTPS 调算法服务；算法服务空闲会休眠，首次派单可能失败一次，
+#    自动派单每 10s 重试，随后恢复。
+#  - 如果 sky-dispatch-algorithm 名称被占用，Render 会分配不同的 URL，
+#    需要同步修改下面的 SKY_ALGO_URL。
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 主服务：前端静态资源 + Java 后端 + WebSocket
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: sky-dispatch
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: SKY_PROFILE
+        value: postgres
+      - key: SKY_ALGO_ENABLED
+        value: "true"
+      - key: SKY_ALGO_URL
+        value: https://sky-dispatch-algorithm.onrender.com
+      - key: DB_HOST
+        fromDatabase:
+          name: sky-dispatch-db
+          property: host
+      - key: DB_PORT
+        fromDatabase:
+          name: sky-dispatch-db
+          property: port
+      - key: DB_NAME
+        fromDatabase:
+          name: sky-dispatch-db
+          property: database
+      - key: DB_USER
+        fromDatabase:
+          name: sky-dispatch-db
+          property: user
+      - key: DB_PASSWORD
+        fromDatabase:
+          name: sky-dispatch-db
+          property: password
+
+  # ---------------------------------------------------------------------------
+  # 算法服务：FastAPI + A*
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: sky-dispatch-algorithm
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./algorithm-service/Dockerfile
+    dockerContext: ./algorithm-service
+    healthCheckPath: /health
+
+databases:
+  - name: sky-dispatch-db
+    databaseName: sky_dispatch
+    plan: free
+    region: singapore

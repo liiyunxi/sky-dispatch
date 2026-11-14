@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>sky-dispatch 实时看板（最简版）</title>
+
+    <!-- Leaflet 走 CDN。内网离线环境请把这两个文件下载到本地再改路径 -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: "Microsoft YaHei", system-ui, sans-serif; background: #0f172a; color: #e2e8f0; }
+        #layout { display: flex; height: 100vh; }
+        #map { flex: 1; }
+        #side { width: 380px; padding: 12px; overflow-y: auto; background: #111827; border-left: 1px solid #1f2937; }
+        h1 { font-size: 16px; margin: 0 0 8px 0; }
+        h2 { font-size: 13px; margin: 16px 0 6px 0; color: #94a3b8; font-weight: 600; }
+        .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .kpi { background: #1f2937; border-radius: 6px; padding: 8px; }
+        .kpi .v { font-size: 20px; font-weight: 700; color: #38bdf8; }
+        .kpi .k { font-size: 11px; color: #94a3b8; }
+        #status { font-size: 12px; padding: 4px 8px; border-radius: 4px; display: inline-block; }
+        .ok { background: #064e3b; color: #6ee7b7; }
+        .bad { background: #7f1d1d; color: #fca5a5; }
+        .warn { background: #78350f; color: #fcd34d; }
+        ul { list-style: none; padding: 0; margin: 0; font-size: 12px; max-height: 220px; overflow-y: auto; }
+        li { padding: 5px 6px; border-bottom: 1px solid #1f2937; line-height: 1.4; }
+        .t { color: #64748b; }
+        .sev-HIGH, .sev-CRITICAL { color: #f87171; }
+        .sev-MEDIUM { color: #fbbf24; }
+        .sev-LOW { color: #94a3b8; }
+        button { background: #1d4ed8; border: 0; color: #fff; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        button:hover { background: #2563eb; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #1f2937; }
+        th { color: #94a3b8; font-weight: 500; }
+    </style>
+</head>
+<body>
+<div id="layout">
+    <div id="map"></div>
+    <div id="side">
+        <h1>sky-dispatch 实时看板</h1>
+        <div><span id="status" class="bad">未连接</span>
+            <button onclick="connect()">重连</button>
+            <button onclick="fetchAll()">拉一次快照</button>
+        </div>
+
+        <h2>核心指标</h2>
+        <div class="kpi-grid" id="kpi"></div>
+
+        <h2>机队状态</h2>
+        <table>
+            <thead><tr><th>编号</th><th>状态</th><th>电量</th><th>速度</th><th>进度</th></tr></thead>
+            <tbody id="fleet"></tbody>
+        </table>
+
+        <h2>冲突告警</h2>
+        <ul id="conflicts"><li class="t">暂无</li></ul>
+
+        <h2>事件流</h2>
+        <ul id="events"><li class="t">暂无</li></ul>
+    </div>
+</div>
+
+<script>
+    // ---------------------------------------------------------------------
+    // 这是一个"零构建"的调试页面：只用原生 WebSocket + Leaflet。
+    // 目的不是做产品级前端，而是让后端能被肉眼验证 —— 后端改完刷新页面就能看效果。
+    // 正式前端（Vue3 + ECharts）在 7 天计划的第 6~7 天做。
+    // ---------------------------------------------------------------------
+    const API = 'http://localhost:8080/api/v1';
+    const WS_URL = (location.protocol === 'https:' ? 'wss://' : 'ws://')
+        + (location.hostname || 'localhost') + ':8080/ws/telemetry';
+
+    const map = L.map('map').setView([31.22, 121.50], 11);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18,
+        attribution: '&copy; OpenStreetMap'
+    }).addTo(map);
+
+    const droneLayer = L.layerGroup().addTo(map);
+    const zoneLayer = L.layerGroup().addTo(map);
+    const markers = {};        // droneId -> Leaflet marker
+    let ws = null;
+
+    function setStatus(text, cls) {
+        const el = document.getElementById('status');
+        el.textContent = text;
+        el.className = cls;
+    }
+
+    // ---------------------------------------------------------------- WebSocket
+    function connect() {
+        if (ws) { try { ws.close(); } catch (e) {} }
+        setStatus('连接中...', 'warn');
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => setStatus('已连接 ' + WS_URL, 'ok');
+        ws.onclose = () => setStatus('连接断开（后端是否已启动？）', 'bad');
+        ws.onerror = () => setStatus('连接出错', 'bad');
+        ws.onmessage = (evt) => {
+            const msg = JSON.parse(evt.data);
+            switch (msg.type) {
+                case 'SNAPSHOT':
+                    renderKpi(msg.payload.kpi);
+                    renderZonesFromSnapshot(msg.payload);
+                    renderDrones(msg.payload.drones);
+                    renderConflicts(msg.payload.openConflicts, false);
+                    break;
+                case 'TELEMETRY':
+                    renderDrones(msg.payload.drones);
+                    break;
+                case 'KPI':
+                    renderKpi(msg.payload);
+                    break;
+                case 'CONFLICT':
+                    renderConflicts([msg.payload], true);
+                    break;
+                case 'EVENT':
+                    renderEvent(msg.payload);
+                    break;
+                default:
+                    console.debug('未处理的消息类型', msg.type);
+            }
+        };
+    }
+
+    // ---------------------------------------------------------------- 渲染
+    function renderKpi(k) {
+        if (!k) return;
+        const items = [
+            ['订单总数', k.totalOrders], ['待派单', k.pendingOrders],
+            ['配送中', k.inFlightOrders], ['已送达', k.deliveredOrders],
+            ['活动无人机', k.activeDrones + ' / ' + k.totalDrones],
+            ['平均电量', (k.avgBatteryPct ?? 0).toFixed(1) + '%'],
+            ['准时率', k.onTimeRate == null ? '-' : (k.onTimeRate * 100).toFixed(1) + '%'],
+            ['未处理冲突', k.openConflicts],
+            ['仿真时间', (k.simTimeS ?? 0).toFixed(0) + 's'], ['仿真拍数', k.tickCount ?? 0]
+        ];
+        document.getElementById('kpi').innerHTML = items.map(([key, v]) =>
+            `<div class="kpi"><div class="v">${v ?? '-'}</div><div class="k">${key}</div></div>`).join('');
+    }
+
+    function renderZonesFromSnapshot() {
+        // 空域数据不在快照里（快照只带无人机），首次进入时拉一次 REST
+        fetch(API + '/airspace/zones').then(r => r.json()).then(res => {
+            zoneLayer.clearLayers();
+            (res.data || []).forEach(z => {
+                const style = { color: z.zoneType === 'NO_FLY' ? '#ef4444' : '#f59e0b', weight: 2, fillOpacity: 0.15 };
+                if (z.shapeType === 'CIRCLE' && z.center) {
+                    L.circle([z.center.lat, z.center.lon], { ...style, radius: z.radiusM }).addTo(zoneLayer)
+                        .bindPopup(`<b>${z.name}</b><br/>${z.zoneType} 半径 ${z.radiusM}m`);
+                } else if (z.shapeType === 'POLYGON' && z.points && z.points.length > 2) {
+                    L.polygon(z.points.map(p => [p.lat, p.lon]), style).addTo(zoneLayer)
+                        .bindPopup(`<b>${z.name}</b><br/>${z.zoneType}`);
+                }
+            });
+        });
+    }
+
+    const statusColor = {
+        IDLE: '#22c55e', ASSIGNED: '#38bdf8', IN_FLIGHT: '#38bdf8',
+        RETURNING: '#a78bfa', CHARGING: '#facc15', MAINTENANCE: '#f97316', OFFLINE: '#6b7280'
+    };
+
+    function renderDrones(drones) {
+        if (!drones) return;
+        const rows = [];
+        drones.forEach(d => {
+            if (d.lat == null || d.lon == null) return;
+            const color = statusColor[d.status] || '#38bdf8';
+            const battery = d.batteryPct == null ? '-' : Number(d.batteryPct).toFixed(1) + '%';
+            const popup = `<b>${d.droneCode}</b><br/>状态：${d.status}<br/>电量：${battery}`
+                + (d.orderNo ? `<br/>订单：${d.orderNo}` : '')
+                + (d.progressPct != null ? `<br/>进度：${Number(d.progressPct).toFixed(0)}%` : '');
+
+            if (!markers[d.droneId]) {
+                markers[d.droneId] = L.circleMarker([d.lat, d.lon], {
+                    radius: 8, color: '#0f172a', weight: 2, fillColor: color, fillOpacity: 0.95
+                }).addTo(droneLayer);
+            }
+            markers[d.droneId].setLatLng([d.lat, d.lon]);
+            markers[d.droneId].setStyle({ fillColor: color });
+            markers[d.droneId].bindPopup(popup);
+
+            rows.push(`<tr><td>${d.droneCode}</td><td>${d.status}</td><td>${battery}</td>`
+                + `<td>${d.speedMps == null ? '-' : Number(d.speedMps).toFixed(1)}</td>`
+                + `<td>${d.progressPct == null ? '-' : Number(d.progressPct).toFixed(0) + '%'}</td></tr>`);
+        });
+        document.getElementById('fleet').innerHTML = rows.join('') || '<tr><td colspan="5" class="t">暂无数据</td></tr>';
+    }
+
+    function renderConflicts(list, prepend) {
+        if (!list || !list.length) return;
+        const ul = document.getElementById('conflicts');
+        if (prepend && ul.querySelector('.t')) ul.innerHTML = '';
+        list.forEach(c => {
+            const li = document.createElement('li');
+            li.className = 'sev-' + (c.severity || 'LOW');
+            li.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span> `
+                + `[${c.conflictType}] ${c.message || ''}`;
+            if (prepend) ul.prepend(li); else ul.appendChild(li);
+        });
+        while (ul.children.length > 30) ul.removeChild(ul.lastChild);
+    }
+
+    function renderEvent(e) {
+        const ul = document.getElementById('events');
+        if (ul.querySelector('.t')) ul.innerHTML = '';
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="t">${new Date().toLocaleTimeString()}</span> `
+            + `<b>${e.eventType}</b> ${e.message || ''}`;
+        ul.prepend(li);
+        while (ul.children.length > 40) ul.removeChild(ul.lastChild);
+    }
+
+    // ---------------------------------------------------------------- REST 兜底
+    function fetchAll() {
+        fetch(API + '/dashboard/kpi').then(r => r.json()).then(res => renderKpi(res.data));
+        fetch(API + '/dashboard/drones').then(r => r.json()).then(res => renderDrones(res.data));
+        fetch(API + '/dashboard/conflicts?status=OPEN').then(r => r.json()).then(res => {
+            const ul = document.getElementById('conflicts');
+            ul.innerHTML = '';
+            renderConflicts(res.data, true);
+        });
+        renderZonesFromSnapshot();
+    }
+
+    renderZonesFromSnapshot();
+    fetchAll();
+    connect();
+</script>
+</body>
+</html>

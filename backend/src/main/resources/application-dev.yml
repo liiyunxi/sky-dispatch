@@ -1,0 +1,50 @@
+# =============================================================================
+#  dev 环境：H2 内存数据库
+#  目的：不需要安装 PostgreSQL 就能把整个链路跑起来（订单 → 调度 → 规划 → 仿真 → 遥测）。
+#  注意：H2 只是"能跑"，生产必须用 postgres profile + Flyway 迁移脚本。
+# =============================================================================
+spring:
+  datasource:
+    url: jdbc:h2:mem:skydispatch;DB_CLOSE_DELAY=-1;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: create-drop     # 由实体反推建表，重启清空
+    properties:
+      hibernate:
+        format_sql: true
+    show-sql: false
+  flyway:
+    enabled: false              # dev 不用 Flyway，避免 PG 方言差异
+  h2:
+    console:
+      enabled: true
+      path: /h2-console         # http://localhost:8080/h2-console
+
+sky:
+  bootstrap:
+    seed-demo-data: true        # 自动灌入型号/无人机/空域/订单演示数据
+  algorithm:
+    # dev 默认【启用】Python A* 算法服务：真实规划绕开禁飞区与建筑障碍，
+    # 而不是两点直线（高楼、机场净空都要求航路必须绕行）。
+    # 因此 dev 启动时请一并拉起 algorithm-service —— 直接用根目录的
+    # `pwsh -File .\start-dev.ps1`（默认就会启动算法服务）。
+    # 确实只想跑后端、不需要真实规划时，用 -Dsky.algorithm.enabled=false 关闭，
+    # 会降级为直线航路（不避让任何障碍物），顶部状态条显示金色「离线降级」。
+    enabled: true
+  simulation:
+    # dev 演示闭环：在站无人机会自动补能、订单送完后按运力自动补单，
+    # 保证打开看板始终有飞机在起降/飞行/送达，而不是固定几单送完后整体静止。
+    demo-recharge-enabled: true
+    demo-replenish-enabled: true
+  dispatch:
+    # dev 演示：允许无人机自主判断"这点电飞不完"，自行改航到就近充电站补能后再继续。
+    # 打开后长航程订单（例如上海那单 10.5km）不再被续航条件直接判死。
+    # 生产建议保持 false：真机的自主改航要过适航与空管评估。
+    relay-charging-enabled: true
+
+logging:
+  level:
+    org.hibernate.SQL: INFO

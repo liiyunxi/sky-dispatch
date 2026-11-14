@@ -1,0 +1,733 @@
+/* =============================================================================
+   全局样式
+   只放"跨页面复用"的东西：布局高度、滚动条、地图容器、卡片间距。
+   组件内部的样式一律写在各自 <style scoped> 里，避免互相污染。
+   ============================================================================= */
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* 页面级永不出现横向滚动条：窗口缩放/表格超宽时由内部容器自己滚动，
+     否则浏览器底部会多出一条贯穿整个窗口的横向滚动条 */
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  /* 深色科技风：深海军蓝底（纯黑会让卡片没有层次），文字用低饱和冷白 */
+  background: #050d18;
+  color: #d8e8fb;
+}
+
+/* ---------- 原生滚动条：全部隐藏 ----------
+   视觉完全交给 components/TechScrollbar.vue 的 DOM 自绘滚动条。
+   这样做而不是只改 ::-webkit-scrollbar，是因为 Chrome 121+ 的标准属性
+   （scrollbar-width/scrollbar-color）会覆盖伪元素样式，外观仍像浏览器自带。 */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none !important;
+}
+
+/* ---------- Leaflet 地图 ---------- */
+/* 地图必须有明确高度，否则容器塌陷成 0 高，什么都看不见 —— 这是 Leaflet 最常见的坑 */
+.leaflet-container {
+  width: 100%;
+  height: 100%;
+  /* 地图底色与深色主题一致：加载中/瓦片缺口时不会闪出一块白 */
+  background: #07131f;
+  font-family: inherit;
+}
+/* 让弹窗里的文字跟系统字号一致，默认偏小 */
+.leaflet-popup-content {
+  margin: 10px 12px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.leaflet-popup-content b {
+  font-size: 14px;
+}
+
+/* ---------- Leaflet 自带控件：默认白底黑字，在深色底图上像两块补丁 ---------- */
+.leaflet-bar {
+  border: 1px solid rgba(34, 211, 238, 0.22) !important;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45) !important;
+}
+
+.leaflet-bar a,
+.leaflet-bar a:focus {
+  background: rgba(7, 20, 34, 0.92) !important;
+  color: #8fd0f5 !important;
+  border-bottom-color: #1d3a55 !important;
+}
+
+.leaflet-bar a:hover {
+  background: rgba(34, 211, 238, 0.18) !important;
+  color: #7ff0ff !important;
+}
+
+.leaflet-bar a.leaflet-disabled {
+  background: rgba(7, 20, 34, 0.7) !important;
+  color: rgba(143, 208, 245, 0.35) !important;
+}
+
+/* 弹窗：深色玻璃，与 HUD 面板一致 */
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: #0c1b2c;
+  color: #d8e8fb;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
+}
+
+/* =============================================================================
+   无人机图标（四旋翼俯视图）
+   ⚠️ 必须放在全局样式里：图标 HTML 是 Leaflet divIcon 动态插入的，
+      不在任何组件的 scoped 作用域内，写在 <style scoped> 里完全不生效。
+   ============================================================================= */
+
+.drone-marker-host {
+  --drone-color: #1677ff;
+  /* 旋翼转一圈的耗时：巡航时约 0.1s，悬停时约 0.26s（由遥测动态写入） */
+  --rotor-duration: 0.2s;
+  /* 机腹阴影的三自由度：随高度淡出、缩小、错开 */
+  --shadow-shift-x: 0px;
+  --shadow-shift-y: 0px;
+  --shadow-scale: 1;
+  --shadow-opacity: 1;
+  /* 清掉 divIcon 默认的白底与边框 */
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+/* 旋转 + 缩放都作用在这一层：根元素被 Leaflet 用 translate3d 定位，不能占用 transform */
+.drone-rot {
+  width: 46px;
+  height: 46px;
+  transform-origin: 50% 50%;
+  /* 提示浏览器这一层会持续变化 */
+  will-change: transform;
+}
+
+.drone-svg {
+  display: block;
+  overflow: visible;
+}
+
+/* ---- 机臂 ---- */
+.drone-arms line {
+  stroke: #4b5563;
+  stroke-width: 3.2;
+  stroke-linecap: round;
+}
+
+/* ---- 旋翼：两叶薄片持续旋转 ----
+   transform-box: fill-box 让旋转中心落在叶片自身包围盒中心。
+   省掉它的话，CSS 旋转会以 SVG 视口原点为中心，旋翼会直接飞出画面。 */
+.drone-rotor ellipse {
+  fill: rgba(75, 85, 99, 0.42);
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: drone-rotor-spin var(--rotor-duration) linear infinite;
+}
+
+/* 四个旋翼给不同转速与相位，避免整齐划一显得像一张静态贴图 */
+.drone-rotor-2 ellipse {
+  animation-duration: calc(var(--rotor-duration) * 0.81);
+  animation-delay: -0.04s;
+}
+.drone-rotor-3 ellipse {
+  animation-duration: calc(var(--rotor-duration) * 1.19);
+  animation-delay: -0.09s;
+}
+.drone-rotor-4 ellipse {
+  animation-duration: calc(var(--rotor-duration) * 0.94);
+  animation-delay: -0.02s;
+}
+
+@keyframes drone-rotor-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- 机身 ---- */
+/* 机腹阴影：离地越高 → 越淡、越小、错得越开（三件事一起做才像"有高度"） */
+.drone-shadow {
+  fill: rgba(15, 23, 42, 0.18);
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: translate(var(--shadow-shift-x), var(--shadow-shift-y)) scale(var(--shadow-scale));
+  opacity: var(--shadow-opacity);
+}
+
+.drone-body {
+  fill: var(--drone-color);
+  stroke: #ffffff;
+  stroke-width: 1.6;
+  transition: fill 0.25s ease;
+}
+
+/* 机头高亮：配合旋转，一眼看出朝向 */
+.drone-nose {
+  fill: rgba(255, 255, 255, 0.92);
+}
+
+.drone-gimbal {
+  fill: #1f2937;
+  stroke: #ffffff;
+  stroke-width: 1;
+}
+
+/* 货箱：默认隐藏，载货时才出现 */
+.drone-payload {
+  display: none;
+  fill: #d97706;
+  stroke: #ffffff;
+  stroke-width: 1.2;
+}
+
+.drone-marker-host.is-loaded .drone-payload {
+  display: block;
+}
+
+/* ---- 低电量脉冲圈 ---- */
+.drone-alert {
+  fill: none;
+  stroke: #ff4d4f;
+  stroke-width: 2;
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.drone-marker-host.is-low-battery .drone-alert {
+  animation: drone-alert-pulse 1.1s ease-out infinite;
+}
+
+@keyframes drone-alert-pulse {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.5);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.05);
+  }
+}
+
+/* 高度线索现在完全由 --shadow-* 变量驱动（见 .drone-shadow），
+   这里不再对 .is-airborne 单独写 opacity，否则会盖掉变量值。 */
+
+/* ---- 选中态 ---- */
+.drone-marker-host.is-selected .drone-svg {
+  filter: drop-shadow(0 0 6px rgba(22, 119, 255, 0.95));
+}
+
+.drone-marker-host.is-selected .drone-body {
+  stroke: #1677ff;
+  stroke-width: 2.4;
+}
+
+/* 尊重系统的"减少动态效果"设置：关掉动画但保留静态造型 */
+@media (prefers-reduced-motion: reduce) {
+  .drone-rotor ellipse,
+  .drone-marker-host.is-low-battery .drone-alert {
+    animation: none;
+  }
+  .drone-marker-host.is-low-battery .drone-alert {
+    opacity: 0.75;
+  }
+}
+
+/* =============================================================================
+   中国地图底图上的城市标注与"作业区"标记
+   ⚠️ 同样是运行时插入的 divIcon，必须写在全局样式里
+   ============================================================================= */
+
+.city-label-host,
+.operation-badge-host {
+  background: transparent;
+  border: 0;
+}
+
+.city-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 3px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #8fb6d6;
+  /* 深色底图上用暗色描边代替白色描边，文字才不会糊成一片光晕 */
+  text-shadow: 0 0 3px #061019, 0 0 3px #061019, 0 0 3px #061019;
+  white-space: nowrap;
+}
+
+.city-label-capital {
+  font-weight: 700;
+  color: #d7ecff;
+}
+
+.city-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #4a7a9c;
+  box-shadow: 0 0 0 1.5px rgba(6, 16, 25, 0.85);
+}
+
+.city-label-capital .city-dot {
+  width: 6px;
+  height: 6px;
+  background: #ff6b6b;
+  box-shadow: 0 0 6px rgba(255, 107, 107, 0.8);
+}
+
+/* -----------------------------------------------------------------------------
+   行政区划常驻名称标签（省 / 市 / 区县）
+   ⚠️ 也是运行时插入的 divIcon，而且**每张地图**（看板、空域拾取器、空域总览、
+   订单取货/送货点拾取）都会用到，所以必须放在全局样式里：
+   早期只写在 DroneMap 的 scoped 样式里，其它地图上的标签就退化成"贴着锚点左上角的
+   一行默认黑字"，层级看不出、还会互相压叠。
+   iconSize/anchor 都是 0，用 translate 把文字精确居中到锚点。
+   ----------------------------------------------------------------------------- */
+.admin-label-host {
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent;
+  border: none;
+}
+
+.admin-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  white-space: nowrap;
+  pointer-events: none;
+  /* 深色底图上用同色系暗描边，浅色文字才不会被"吃掉" */
+  text-shadow:
+    0 0 2px rgba(4, 12, 20, 0.95),
+    0 0 3px rgba(4, 12, 20, 0.9),
+    0 0 4px rgba(4, 12, 20, 0.75);
+}
+
+/* 省名：稍大、深色、加粗，作为方位锚点 */
+.admin-label--province {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cfe8ff;
+}
+
+/* 全国视野（低缩放）：省名改用简称并缩一号字，34 个名字才不会互相压叠 */
+.admin-label--dense {
+  font-size: 11px;
+}
+
+/* 市名：中等 */
+.admin-label--city {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8fc9ff;
+}
+
+/* 区县名：小一号，用青色与市名区分层级 */
+.admin-label--district {
+  font-size: 10px;
+  font-weight: 500;
+  color: #6fd8e8;
+}
+
+/* 作业区汇总标记：低缩放下指示"机队在这里"，可点击放大 */
+.operation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: rgba(22, 119, 255, 0.94);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.3;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.45);
+  transition: transform 0.15s ease;
+}
+
+.operation-badge:hover {
+  transform: scale(1.05);
+}
+
+.operation-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  animation: operation-pulse 1.6s ease-out infinite;
+}
+
+@keyframes operation-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.85);
+  }
+  100% {
+    box-shadow: 0 0 0 7px rgba(255, 255, 255, 0);
+  }
+}
+
+.operation-count {
+  opacity: 0.9;
+}
+
+.operation-hint {
+  opacity: 0.75;
+  font-size: 10px;
+  border-left: 1px solid rgba(255, 255, 255, 0.4);
+  padding-left: 5px;
+}
+
+/* ---------- 通用小工具类 ---------- */
+.text-muted {
+  color: rgba(180, 208, 232, 0.62);
+}
+.text-mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+}
+.mb-16 {
+  margin-bottom: 16px;
+}
+.mt-16 {
+  margin-top: 16px;
+}
+
+/* 表单项下的辅助说明（如「留空则自动生成」）：
+   两三个页面共用，放全局而不是各自 scoped，避免三处各写一份 */
+.field-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(180, 208, 232, 0.58);
+}
+
+/* 指标卡片里的数字用等宽字体，数值跳动时不会左右抖 */
+.ant-statistic-content-value-int,
+.ant-statistic-content-value-decimal {
+  font-variant-numeric: tabular-nums;
+}
+
+/* =============================================================================
+   深色科技风：按钮与卡片质感（全局，覆盖 Ant Design 默认视觉）
+   ⚠️ 只改配色/描边/辉光，不改尺寸与留白，避免影响批量操作时的点击密度。
+   ============================================================================= */
+
+.ant-btn {
+  position: relative;
+  overflow: hidden;
+  border-radius: 4px;
+  /* 顶部一层极淡的高光，模拟"金属面板"的受光面 */
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0));
+  transition:
+    color 0.18s ease,
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    filter 0.18s ease,
+    transform 0.12s ease;
+}
+
+/* 悬停扫描光带：像仪器按键被扫描头划过，循环扫过按钮表面。
+   Ant 只在 compact 相邻按钮上用 ::before，普通按钮不会与它冲突。 */
+.ant-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 45%;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent, rgba(159, 240, 255, 0.24), transparent);
+  transform: translateX(-160%);
+}
+
+.ant-btn:not(:disabled):hover::before {
+  animation: btn-scan 1.5s linear infinite;
+}
+
+/* 按压反馈：轻微下沉 + 提亮，模仿实体按键 */
+.ant-btn:not(:disabled):active {
+  transform: translateY(1px) scale(0.99);
+  filter: brightness(1.18);
+}
+
+@keyframes btn-scan {
+  from {
+    transform: translateX(-160%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+
+.ant-btn-default {
+  border-color: rgba(56, 232, 255, 0.3);
+  color: #cfeaff;
+  /* 切角：所有次级按钮统一成仪表盘按键的形状。
+     ⚠️ clip-path 会把外发光一起裁掉，所以悬停辉光用 filter: drop-shadow（在裁剪之后生效）。 */
+  border-radius: 0;
+  clip-path: polygon(6px 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%, 0 6px);
+}
+
+.ant-btn-default:not(:disabled):hover {
+  border-color: rgba(56, 232, 255, 0.72);
+  color: #7ff0ff;
+  /* 呼吸式辉光：悬停时持续"通电"，而不是亮一下就停 */
+  animation: btn-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes btn-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 4px rgba(56, 232, 255, 0.3));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(56, 232, 255, 0.75));
+  }
+}
+
+/* 主按钮：切角 + 蓝青渐变 + 辉光。
+   :not(.ant-btn-dangerous) 很重要 —— 删除类按钮也是 primary，
+   不加限定会把红色危险按钮一并染成蓝色。 */
+.ant-btn-primary:not(.ant-btn-dangerous) {
+  border-color: transparent;
+  border-radius: 0;
+  background-color: transparent;
+  /* !important：Ant 的按钮样式是运行时注入的 CSS-in-JS，命中顺序可能晚于本文件，
+     不加的话渐变会被它的 background 简写整条覆盖掉（只剩一片深色）。 */
+  background-image: linear-gradient(120deg, #1677ff 0%, #22b8e6 42%, #1677ff 100%) !important;
+  background-size: 220% 100%;
+  /* 常驻的"能量流动"：渐变缓慢横向推移，主按钮看起来一直是通电状态 */
+  animation: btn-flow 6s linear infinite;
+  /* 切角会把 box-shadow 裁掉，外发光只能用 drop-shadow */
+  filter: drop-shadow(0 3px 10px rgba(22, 119, 255, 0.45));
+  clip-path: polygon(
+    8px 0,
+    100% 0,
+    100% calc(100% - 8px),
+    calc(100% - 8px) 100%,
+    0 100%,
+    0 8px
+  );
+}
+
+@keyframes btn-flow {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 200% 50%;
+  }
+}
+
+.ant-btn-primary:not(.ant-btn-dangerous):not(:disabled):hover {
+  background-color: transparent;
+  background-image: linear-gradient(135deg, #2f8dff 0%, #3fd0f5 100%) !important;
+  filter: drop-shadow(0 0 10px rgba(56, 232, 255, 0.6));
+}
+
+/* 文字按钮（如顶栏刷新）不参与辉光，避免图标周围出现方形光斑 */
+.ant-btn-text,
+.ant-btn-link {
+  background-image: none;
+}
+
+.ant-btn-text:not(:disabled):hover {
+  background-color: rgba(34, 211, 238, 0.1) !important;
+  color: #7ff0ff !important;
+}
+
+/* 刷新图标：悬停转半圈，给"重新取样"一个明确反馈 */
+.ant-btn:not(:disabled):hover .anticon-reload {
+  transform: rotate(180deg);
+  transition: transform 0.45s ease;
+}
+
+/* 尊重"减少动态效果"：关闭扫描 / 能量流动 / 呼吸辉光 / 按压位移 */
+@media (prefers-reduced-motion: reduce) {
+  .ant-btn::before,
+  .ant-btn-primary:not(.ant-btn-dangerous) {
+    animation: none !important;
+  }
+
+  .ant-btn:not(:disabled):hover,
+  .ant-btn:not(:disabled):active {
+    animation: none !important;
+    transform: none;
+  }
+}
+
+/* 卡片：细描边 + 深投影，让面板"浮"在网格底纹上 */
+.ant-card {
+  border-color: #16293d;
+  box-shadow:
+    0 0 0 1px rgba(34, 211, 238, 0.04),
+    0 10px 26px rgba(0, 0, 0, 0.38);
+}
+
+.ant-card-head {
+  border-bottom-color: #16293d;
+}
+
+/* 页签：Ant 默认用主色 (#1677ff) 作选中文字，深底上只有 3:1，
+   比未选中的浅灰还暗，层级看起来是反的，这里统一提亮到青色 */
+.ant-tabs-tab.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: #4fc3ff !important;
+  text-shadow: 0 0 10px rgba(34, 211, 238, 0.35);
+}
+
+.ant-tabs-tab:hover .ant-tabs-tab-btn {
+  color: #7ff0ff;
+}
+
+.ant-tabs-ink-bar {
+  background: #22d3ee !important;
+}
+
+/* =============================================================================
+   HUD 面板语言：卡片角标 / 表头刻度 / 等宽读数 / 聚焦辉光
+   与顶栏读数条保持同一套视觉语言，内容区才不像"普通深色后台"。
+   ============================================================================= */
+
+/* 卡片四角 L 形角标：纯装饰，pointer-events: none 不挡任何交互 */
+.ant-card {
+  position: relative;
+}
+
+.ant-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  --hud-corner: rgba(56, 232, 255, 0.75);
+  background:
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left top / 14px 1.5px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left top / 1.5px 14px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right top / 14px 1.5px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right top / 1.5px 14px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left bottom / 14px 1.5px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) left bottom / 1.5px 14px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right bottom / 14px 1.5px no-repeat,
+    linear-gradient(var(--hud-corner), var(--hud-corner)) right bottom / 1.5px 14px no-repeat;
+  opacity: 0.72;
+}
+
+/* 卡片标题：左侧发光刻度条 + 提亮字色 */
+.ant-card-head-title {
+  position: relative;
+  padding-inline-start: 10px;
+  letter-spacing: 0.4px;
+  color: #e4f6ff;
+}
+
+.ant-card-head-title::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 12px;
+  background: #38e8ff;
+  box-shadow: 0 0 8px rgba(56, 232, 255, 0.9);
+}
+
+/* 表头：暗青渐变 + 分度线，读数像数据终端而不是普通表格 */
+.ant-table {
+  font-variant-numeric: tabular-nums;
+}
+
+.ant-table-thead > tr > th {
+  background: linear-gradient(180deg, rgba(20, 46, 70, 0.92), rgba(10, 26, 43, 0.92)) !important;
+  color: #9fd9f5 !important;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid rgba(56, 232, 255, 0.22) !important;
+}
+
+.ant-table-thead > tr > th::before {
+  background-color: rgba(56, 232, 255, 0.18) !important;
+}
+
+.ant-table-tbody > tr > td {
+  border-bottom-color: rgba(29, 58, 85, 0.72);
+}
+
+/* 统计数字：等宽 + 冷光，数值跳动时既不抖动、也有"读数"感 */
+.ant-statistic-title {
+  letter-spacing: 0.5px;
+  color: rgba(150, 199, 232, 0.72);
+}
+
+.ant-statistic-content {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.ant-statistic-content-value {
+  color: #eafcff;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 14px rgba(56, 232, 255, 0.35);
+}
+
+.ant-statistic-content-suffix {
+  font-size: 12px;
+  color: rgba(150, 199, 232, 0.72);
+}
+
+/* 状态标签统一收一点圆角，和切角面板不打架 */
+.ant-tag {
+  border-radius: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 表单控件聚焦：青色描边 + 外发光，暗示"信号已接通" */
+.ant-input:hover,
+.ant-input-affix-wrapper:hover,
+.ant-picker:hover,
+.ant-input-number:hover,
+.ant-select:not(.ant-select-disabled):hover .ant-select-selector {
+  border-color: rgba(56, 232, 255, 0.5) !important;
+}
+
+.ant-input:focus,
+.ant-input-focused,
+.ant-input-affix-wrapper-focused,
+.ant-picker-focused,
+.ant-select-focused .ant-select-selector {
+  border-color: rgba(56, 232, 255, 0.75) !important;
+  box-shadow: 0 0 0 2px rgba(56, 232, 255, 0.12) !important;
+}
+
+/* 弹窗：深色面板 + 青色细边，弹层与背景有明确的"仪器面板"分界 */
+.ant-modal-content {
+  background: linear-gradient(180deg, rgba(13, 32, 50, 0.98), rgba(8, 20, 33, 0.98));
+  border: 1px solid rgba(56, 232, 255, 0.22);
+  box-shadow:
+    0 0 0 1px rgba(56, 232, 255, 0.06),
+    0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.ant-modal-header {
+  background: transparent;
+}

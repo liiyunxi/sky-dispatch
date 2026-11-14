@@ -1,0 +1,11 @@
+.git
+.gitignore
+.trae
+.build
+**/node_modules
+**/target
+**/dist
+**/.venv
+**/__pycache__
+**/.pytest_cache
+frontend/public/geo/*.tmp
