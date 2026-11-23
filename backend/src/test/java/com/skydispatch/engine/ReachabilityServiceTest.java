@@ -125,6 +125,7 @@ class ReachabilityServiceTest {
                 new SkyProperties.Dispatch("NEAREST_AVAILABLE", 10000, 25,
                         1.0, 0.5, 0.3, true, 90, 1.15),
                 new SkyProperties.Flight(80, 50, 30, 4, 3, 80),
-                new SkyProperties.Bootstrap(true));
+                new SkyProperties.Bootstrap(true),
+                new SkyProperties.Auth(false, "admin", "test", "test-secret", 60));
     }
 }

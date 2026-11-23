@@ -1,5 +1,7 @@
 package com.skydispatch.config;
 
+import com.skydispatch.auth.AuthService;
+import com.skydispatch.ws.TelemetryHandshakeInterceptor;
 import com.skydispatch.ws.TelemetryWebSocketHandler;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
@@ -13,21 +15,28 @@ import org.springframework.web.socket.config.annotation.WebSocketHandlerRegistry
  * 原生 WebSocket 足够，且浏览器端零依赖、易调试（浏览器控制台里就能收发）。
  *
  * <p>{@code setAllowedOriginPatterns("*")} 是为了让本地打开的测试页面
- * （file:// 或别的端口）也能连上，生产环境要收紧成具体域名。
+ * （file:// 或别的端口）也能连上；真正的访问控制由握手阶段的 token 校验负责。
  */
 @Configuration
 @EnableWebSocket
 public class WebSocketConfig implements WebSocketConfigurer {
 
     private final TelemetryWebSocketHandler telemetryHandler;
+    private final AuthService authService;
+    private final SkyProperties properties;
 
-    public WebSocketConfig(TelemetryWebSocketHandler telemetryHandler) {
+    public WebSocketConfig(TelemetryWebSocketHandler telemetryHandler,
+                           AuthService authService,
+                           SkyProperties properties) {
         this.telemetryHandler = telemetryHandler;
+        this.authService = authService;
+        this.properties = properties;
     }
 
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(telemetryHandler, "/ws/telemetry")
+                .addInterceptors(new TelemetryHandshakeInterceptor(properties, authService))
                 .setAllowedOriginPatterns("*");
     }
 }

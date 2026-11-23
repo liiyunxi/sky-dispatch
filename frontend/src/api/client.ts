@@ -1,5 +1,6 @@
 import { message } from 'ant-design-vue'
 import type { ApiEnvelope } from './types'
+import { clearAuth, getToken } from './token'
 
 /**
  * HTTP 客户端：把后端的统一响应包装解掉，并把错误变成异常。
@@ -54,12 +55,20 @@ function buildQuery(params?: RequestOptions['params']): string {
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = 'GET', params, body, silent = false } = options
   const url = `/api/v1${path}${buildQuery(params)}`
+  const headers: Record<string, string> = {}
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+  const token = getToken()
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
+  }
 
   let response: Response
   try {
     response = await fetch(url, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (e) {
@@ -88,6 +97,21 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     throw new ApiError(-1, gatewayMsg, response.status)
   }
 
+  // 登录态失效：清理 token 并回登录页（登录页本身不跳，避免死循环）
+  if (response.status === 401) {
+    clearAuth()
+    const onLoginPage = window.location.pathname === '/login'
+    if (!onLoginPage) {
+      if (!silent) message.error('登录已过期，请重新登录')
+      window.location.replace('/login')
+    }
+    throw new ApiError(
+      envelope?.code ?? 1005,
+      envelope?.message || '未登录或登录已过期',
+      401,
+    )
+  }
+
   if (!response.ok || envelope.code !== 0) {
     const msg = envelope?.message || `请求失败（HTTP ${response.status}）`
     if (!silent) message.error(msg)
@@ -100,7 +124,18 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 /** 文件下载：不走统一包装，直接拿字节流并触发浏览器下载 */
 async function download(path: string, params?: RequestOptions['params']): Promise<void> {
   const url = `/api/v1${path}${buildQuery(params)}`
-  const response = await fetch(url)
+  const token = getToken()
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (response.status === 401) {
+    clearAuth()
+    if (window.location.pathname !== '/login') {
+      window.location.replace('/login')
+    }
+    message.error('登录已过期，请重新登录')
+    throw new ApiError(1005, '登录已过期', 401)
+  }
   if (!response.ok) {
     message.error(`导出失败（HTTP ${response.status}）`)
     throw new ApiError(-1, '导出失败', response.status)

@@ -33,6 +33,7 @@ public class GlobalExceptionHandler {
             case NOT_FOUND -> HttpStatus.NOT_FOUND;
             case ILLEGAL_STATE -> HttpStatus.CONFLICT;
             case ALGORITHM_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
+            case UNAUTHORIZED -> HttpStatus.UNAUTHORIZED;
             default -> HttpStatus.BAD_REQUEST;
         };
         log.warn("业务异常 code={} message={}", code.getCode(), ex.getMessage());

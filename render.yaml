@@ -33,6 +33,14 @@ services:
         value: "true"
       - key: SKY_ALGO_URL
         value: https://sky-dispatch-algorithm.onrender.com
+      # 登录账号：用户名固定 admin，密码在 Render Dashboard 首次部署时填写
+      - key: SKY_AUTH_USERNAME
+        value: admin
+      - key: SKY_AUTH_PASSWORD
+        sync: false
+      # 令牌签名密钥由 Render 随机生成，不落库、不写进仓库
+      - key: SKY_AUTH_SECRET
+        generateValue: true
       - key: DB_HOST
         fromDatabase:
           name: sky-dispatch-db

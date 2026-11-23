@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+import { isAuthenticated } from '@/api/token'
 
 /**
  * 路由表。
@@ -10,6 +11,13 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
  * 所有页面都用动态 import 懒加载：首屏只加载看板，其它页面点了才下载。
  */
 const routes: RouteRecordRaw[] = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    // public：不套侧栏/顶栏，也不要求登录态
+    meta: { title: '登录', public: true },
+  },
   {
     path: '/',
     name: 'dashboard',
@@ -47,6 +55,29 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHistory(),
   routes,
+})
+
+/**
+ * 路由守卫：未登录只能去登录页；已登录访问登录页则回看板。
+ *
+ * 这里只做“有没有 token 且未过期”的判断；token 是否被服务端认可由接口 401 兜底，
+ * 前端不解析 token 内容，避免把安全判断建立在客户端。
+ */
+router.beforeEach((to) => {
+  const isPublic = Boolean(to.meta.public)
+  if (isPublic) {
+    if (to.path === '/login' && isAuthenticated()) {
+      return { path: '/' }
+    }
+    return true
+  }
+  if (!isAuthenticated()) {
+    return {
+      path: '/login',
+      query: to.fullPath && to.fullPath !== '/' ? { redirect: to.fullPath } : undefined,
+    }
+  }
+  return true
 })
 
 // 顺手把页面标题同步到浏览器标签页，方便运营开多个标签时区分

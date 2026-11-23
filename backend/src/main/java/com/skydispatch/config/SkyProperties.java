@@ -18,7 +18,8 @@ public record SkyProperties(
         @DefaultValue Simulation simulation,
         @DefaultValue Dispatch dispatch,
         @DefaultValue Flight flight,
-        @DefaultValue Bootstrap bootstrap
+        @DefaultValue Bootstrap bootstrap,
+        @DefaultValue Auth auth
 ) {
 
     /** 调用 Python 算法服务的参数。 */
@@ -117,6 +118,25 @@ public record SkyProperties(
     /** 演示数据开关。 */
     public record Bootstrap(
             @DefaultValue("true") boolean seedDemoData
+    ) {
+    }
+
+    /**
+     * 登录鉴权参数。
+     *
+     * <p>内部演示平台使用单账号 + HMAC 签名令牌：
+     * 登录接口校验账号密码后签发一个带过期时间的 token，前端放在
+     * {@code Authorization: Bearer} 里，HTTP 接口与 WebSocket 握手都校验它。
+     *
+     * <p>生产环境至少要把 {@code secret} 换成随机值、密码走密钥管理，
+     * 并在此基础上替换为统一身份认证（OIDC/LDAP）。
+     */
+    public record Auth(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("admin") String username,
+            @DefaultValue("sky-dispatch") String password,
+            @DefaultValue("dev-only-change-me-sky-dispatch-secret-32bytes") String secret,
+            @DefaultValue("720") long tokenTtlMinutes
     ) {
     }
 }

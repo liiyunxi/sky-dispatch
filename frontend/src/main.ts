@@ -30,4 +30,8 @@ app.config.errorHandler = (err, _instance, info) => {
   console.error('[sky-dispatch] 组件异常:', err, info)
 }
 
-app.mount('#app')
+// 等首次路由守卫完成再挂载：
+// 否则登录页首帧会以“未解析的 /”挂载，App 可能先发起一轮未授权的快照/WS 请求。
+router.isReady().then(() => {
+  app.mount('#app')
+})

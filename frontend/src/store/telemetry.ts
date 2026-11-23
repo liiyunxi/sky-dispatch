@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { getToken } from '@/api/token'
 import {
   airspaceApi,
   stationApi,
@@ -94,7 +95,10 @@ let pollTimer: number | null = null
  */
 function buildWsUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}/ws/telemetry`
+  // 浏览器 WebSocket 不能自定义请求头，鉴权 token 通过查询参数传给握手拦截器
+  const token = getToken()
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${protocol}//${window.location.host}/ws/telemetry${query}`
 }
 
 function handleMessage(raw: string): void {

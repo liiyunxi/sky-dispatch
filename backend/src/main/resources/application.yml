@@ -87,6 +87,16 @@ sky:
   bootstrap:
     seed-demo-data: true
 
+  # 登录鉴权（内部演示平台使用单账号 + HMAC 令牌）
+  auth:
+    enabled: ${SKY_AUTH_ENABLED:true}
+    username: ${SKY_AUTH_USERNAME:admin}
+    # 本地默认密码仅用于开发；部署时务必通过环境变量覆盖
+    password: ${SKY_AUTH_PASSWORD:sky-dispatch}
+    # token 签名密钥，至少 32 字节；生产必须用随机值
+    secret: ${SKY_AUTH_SECRET:dev-only-change-me-sky-dispatch-secret-32bytes}
+    token-ttl-minutes: ${SKY_AUTH_TTL_MINUTES:720}
+
 management:
   endpoints:
     web:

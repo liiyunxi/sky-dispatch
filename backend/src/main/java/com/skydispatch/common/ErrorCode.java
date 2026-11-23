@@ -16,6 +16,8 @@ public enum ErrorCode {
     ILLEGAL_STATE(1003, "当前状态不允许该操作"),
     /** 没有满足载重/电量/距离条件的空闲无人机 */
     NO_AVAILABLE_DRONE(1004, "没有可用的无人机"),
+    /** 未登录、token 过期或账号密码错误 */
+    UNAUTHORIZED(1005, "未登录或登录已过期"),
     /** Python 算法服务连不上或超时 */
     ALGORITHM_UNAVAILABLE(2001, "算法服务不可用"),
     /** 算法服务返回了结果，但规划失败（无可行路径） */

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message, theme as antTheme } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
@@ -9,6 +9,7 @@ import {
   CarryOutOutlined,
   DashboardOutlined,
   GlobalOutlined,
+  LogoutOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   ProfileOutlined,
@@ -16,6 +17,8 @@ import {
   StepForwardOutlined,
 } from '@ant-design/icons-vue'
 import { useTelemetry } from '@/store/telemetry'
+import { useAuth } from '@/store/auth'
+import { isAuthenticated } from '@/api/token'
 import TechScrollbar from '@/components/TechScrollbar.vue'
 import { RUN_STATUS_TEXT, formatDuration } from '@/utils/format'
 
@@ -34,6 +37,10 @@ import { RUN_STATUS_TEXT, formatDuration } from '@/utils/format'
 const router = useRouter()
 const route = useRoute()
 const telemetry = useTelemetry()
+const auth = useAuth()
+const authUsername = auth.username
+/** 登录页等 public 路由不套侧栏/顶栏，也不建立实时连接 */
+const isPublicRoute = computed(() => Boolean(route.meta.public))
 
 /**
  * 深色科技风主题（Ant Design 的 Design Token 换肤）。
@@ -248,32 +255,71 @@ async function handleRefresh() {
   message.success('已刷新')
 }
 
+let telemetryStarted = false
 let stateTimer: number | null = null
 
-onMounted(async () => {
+/** 只有进入受保护页面后才建立实时连接，登录页不产生任何未授权请求 */
+async function startTelemetry(): Promise<void> {
+  // 未登录（或 token 已过期）时绝不发请求：登录页不该产生 401/WS 握手错误
+  if (telemetryStarted || !isAuthenticated()) return
+  telemetryStarted = true
   // 先建连接：连上后服务端会主动推 SNAPSHOT，比 REST 拉取更"一条路"
   telemetry.connect()
   // 并行拉一次兜底数据，即使 WebSocket 被拦也能立刻看到内容
-  await Promise.all([
-    telemetry.refreshSnapshot(),
-    telemetry.refreshRun(),
-    telemetry.loadRuntimeState(),
-    telemetry.probeAlgorithm(),
-  ])
+  try {
+    await Promise.all([
+      telemetry.refreshSnapshot(),
+      telemetry.refreshRun(),
+      telemetry.loadRuntimeState(),
+      telemetry.probeAlgorithm(),
+    ])
+  } catch {
+    // 401/网络异常由 API 客户端统一处理（清理 token 并回登录页），这里避免未处理拒绝
+  }
   // 运行时状态也可能被其它页面改变（比如订单页的批量派单），定期同步一次
-  stateTimer = window.setInterval(() => void telemetry.loadRuntimeState(), 10_000)
-})
+  if (stateTimer === null) {
+    stateTimer = window.setInterval(() => void telemetry.loadRuntimeState(), 10_000)
+  }
+}
+
+function stopTelemetry(): void {
+  telemetryStarted = false
+  if (stateTimer !== null) {
+    window.clearInterval(stateTimer)
+    stateTimer = null
+  }
+  telemetry.disconnect()
+}
+
+/** 退出登录：断开实时连接、清 token、回登录页 */
+function handleLogout(): void {
+  stopTelemetry()
+  auth.logout()
+  void router.replace('/login')
+}
+
+// 登录页 ↔ 主应用之间切换时自动建立/断开实时连接
+watch(
+  isPublicRoute,
+  (isPublic) => {
+    if (isPublic) stopTelemetry()
+    else void startTelemetry()
+  },
+  { immediate: true },
+)
 
 onUnmounted(() => {
-  if (stateTimer !== null) window.clearInterval(stateTimer)
-  telemetry.disconnect()
+  stopTelemetry()
 })
 </script>
 
 <template>
   <!-- Ant Design Vue 的中文语言包：日期选择器、分页文案等都会跟着变中文 -->
   <a-config-provider :locale="zhCN" :theme="techTheme">
-    <a-layout class="app-layout">
+    <!-- public 路由（登录页）不套侧栏/顶栏 -->
+    <router-view v-if="isPublicRoute" />
+
+    <a-layout v-else class="app-layout">
       <!-- ------------------------------ 左侧导航 ------------------------------ -->
       <a-layout-sider :width="208" theme="dark" class="app-sider">
         <!-- 纯装饰层：纵向自检扫描 + 右缘刻度导轨（不参与布局与交互） -->
@@ -397,6 +443,12 @@ onUnmounted(() => {
                 <template #icon><ReloadOutlined /></template>
               </a-button>
             </a-space>
+
+            <a-tooltip :title="`退出登录（${authUsername || 'admin'}）`">
+              <a-button size="small" type="text" class="logout-btn" @click="handleLogout">
+                <template #icon><LogoutOutlined /></template>
+              </a-button>
+            </a-tooltip>
           </div>
         </a-layout-header>
 
@@ -1256,5 +1308,13 @@ onUnmounted(() => {
   .app-sider :deep(.nav-glow)::after {
     animation: none;
   }
+}
+
+.logout-btn {
+  color: rgba(159, 199, 232, 0.7);
+}
+
+.logout-btn:hover {
+  color: #ff9a9a !important;
 }
 </style>
