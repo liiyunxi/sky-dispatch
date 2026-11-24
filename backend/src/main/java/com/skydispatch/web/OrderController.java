@@ -8,6 +8,7 @@ import com.skydispatch.dto.OrderDtos;
 import com.skydispatch.dto.TaskDtos;
 import com.skydispatch.service.DispatchService;
 import com.skydispatch.service.OrderService;
+import com.skydispatch.service.OrderTraceService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -20,6 +21,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 订单接口。
@@ -39,10 +42,13 @@ public class OrderController {
 
     private final OrderService orderService;
     private final DispatchService dispatchService;
+    private final OrderTraceService orderTraceService;
 
-    public OrderController(OrderService orderService, DispatchService dispatchService) {
+    public OrderController(OrderService orderService, DispatchService dispatchService,
+                           OrderTraceService orderTraceService) {
         this.orderService = orderService;
         this.dispatchService = dispatchService;
+        this.orderTraceService = orderTraceService;
     }
 
     @PostMapping
@@ -52,12 +58,13 @@ public class OrderController {
     }
 
     @GetMapping
-    @Operation(summary = "分页查询订单", description = "可按状态、优先级过滤")
+    @Operation(summary = "分页查询订单", description = "可按状态、状态集合、优先级过滤")
     public ApiResponse<CommonDtos.PageResponse<OrderDtos.Response>> list(
             @RequestParam(required = false) OrderStatus status,
+            @RequestParam(required = false) List<OrderStatus> statuses,
             @RequestParam(required = false) Priority priority,
             @PageableDefault(size = 20, sort = "id") Pageable pageable) {
-        return ApiResponse.ok(orderService.list(status, priority, pageable));
+        return ApiResponse.ok(orderService.list(status, statuses, priority, pageable));
     }
 
     @GetMapping("/{id}")
@@ -70,6 +77,13 @@ public class OrderController {
     @Operation(summary = "取消订单", description = "仅 CREATED / PLANNING / QUEUED / ASSIGNED 状态可取消")
     public ApiResponse<OrderDtos.Response> cancel(@PathVariable Long id) {
         return ApiResponse.ok(orderService.cancel(id));
+    }
+
+    @GetMapping("/{id}/trace")
+    @Operation(summary = "订单链路追踪",
+            description = "一次返回画全链路所需的订单快照、任务执行、事件时间线与派单决策")
+    public ApiResponse<OrderDtos.TraceResponse> trace(@PathVariable Long id) {
+        return ApiResponse.ok(orderTraceService.trace(id));
     }
 
     @PostMapping("/{id}/dispatch")

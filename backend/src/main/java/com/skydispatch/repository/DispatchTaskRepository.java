@@ -90,4 +90,7 @@ public interface DispatchTaskRepository extends JpaRepository<DispatchTask, Long
 
     /** 取某订单最新的一条任务，重派场景下就是"当前有效的那次执行"。 */
     Optional<DispatchTask> findFirstByOrderIdOrderByIdDesc(Long orderId);
+
+    /** 某订单的全部执行任务（重派会有多条），按 id 倒序。 */
+    List<DispatchTask> findByOrderIdOrderByIdDesc(Long orderId);
 }

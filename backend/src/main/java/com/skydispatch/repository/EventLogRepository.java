@@ -20,6 +20,14 @@ public interface EventLogRepository extends JpaRepository<EventLog, Long> {
     /** 按任务取完整时间线，按事件时间升序（回放要正序）。 */
     List<EventLog> findByTaskIdOrderByTsAsc(Long taskId);
 
+    /**
+     * 按订单取完整业务链路，按事件时间升序。
+     *
+     * <p>订单链路追踪的主查询：下单、派单、起飞、送达、返航、冲突、补能
+     * 都通过 {@code order_id} 冗余写在事件表里，不需要 join 任务表。
+     */
+    List<EventLog> findByOrderIdOrderByTsAsc(Long orderId);
+
     /** 全量日志按时间倒序分页，供全局日志列表页使用。 */
     Page<EventLog> findAllByOrderByTsDesc(Pageable pageable);
 

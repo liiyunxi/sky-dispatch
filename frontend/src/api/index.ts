@@ -17,6 +17,7 @@ import type {
   Order,
   OrderCreateRequest,
   OrderStatus,
+  OrderTrace,
   PageResponse,
   Priority,
   DroneFrame,
@@ -53,9 +54,22 @@ export const dashboardApi = {
 // 订单
 // ---------------------------------------------------------------------------
 export const orderApi = {
-  list: (params: { status?: OrderStatus; priority?: Priority; page?: number; size?: number }) =>
-    http.get<PageResponse<Order>>('/orders', params),
+  /**
+   * 分页查询。
+   *
+   * statuses 用逗号分隔的枚举串传（Spring 会自动切成 List）：
+   * 订单页的「流水线阶段」一次代表多个状态，走后端筛选才能保证分页总数正确。
+   */
+  list: (params: {
+    status?: OrderStatus
+    statuses?: string
+    priority?: Priority
+    page?: number
+    size?: number
+  }) => http.get<PageResponse<Order>>('/orders', params),
   get: (id: number) => http.get<Order>(`/orders/${id}`),
+  /** 订单全链路：订单快照 + 任务执行 + 事件时间线 + 派单决策（可静默，供自动刷新） */
+  trace: (id: number, silent = false) => http.get<OrderTrace>(`/orders/${id}/trace`, undefined, silent),
   create: (body: OrderCreateRequest) => http.post<Order>('/orders', body),
   cancel: (id: number) => http.post<Order>(`/orders/${id}/cancel`),
   dispatch: (id: number, strategy?: string) =>

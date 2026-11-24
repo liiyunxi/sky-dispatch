@@ -11,6 +11,7 @@ import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * 订单相关的请求/响应模型。
@@ -67,5 +68,22 @@ public final class OrderDtos {
                     o.getExpectDeliveryAt(), o.getAssignedDroneId(), o.getFailReason(), o.getRemark(),
                     o.getCreatedAt(), o.getUpdatedAt());
         }
+    }
+
+    /**
+     * 订单链路追踪：一次返回前端画"全链路"所需的全部数据。
+     *
+     * <p>为什么不拆成三个接口？链路面板要同时展示时间线、任务执行和派单决策，
+     * 三个请求会出现"时间线和任务卡不是同一时刻"的错位；一次读事务返回同一快照更可靠。
+     */
+    public record TraceResponse(
+            Response order,
+            /** 该订单的全部执行任务，按 id 倒序（最新一次在前） */
+            List<TaskDtos.Response> tasks,
+            /** 事件时间线，按 ts 升序 */
+            List<TaskDtos.EventResponse> events,
+            /** 历次派单的候选评估，按排名升序 */
+            List<TaskDtos.DecisionResponse> decisions
+    ) {
     }
 }

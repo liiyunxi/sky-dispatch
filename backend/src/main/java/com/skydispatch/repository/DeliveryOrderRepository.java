@@ -50,6 +50,13 @@ public interface DeliveryOrderRepository extends JpaRepository<DeliveryOrder, Lo
     /** 按状态集合查询，如一次取出所有待处理订单。 */
     List<DeliveryOrder> findByStatusIn(Collection<OrderStatus> statuses);
 
+    /** 按状态集合分页查询：订单页的「流水线阶段」一次筛选多个状态。 */
+    Page<DeliveryOrder> findByStatusIn(Collection<OrderStatus> statuses, Pageable pageable);
+
+    /** 按状态集合 + 优先级分页查询。 */
+    Page<DeliveryOrder> findByStatusInAndPriority(Collection<OrderStatus> statuses, Priority priority,
+                                                  Pageable pageable);
+
     /** 按状态集合查询，按 id 倒序；地图只画未完结订单，避免把历史订单全量捞出来。 */
     List<DeliveryOrder> findByStatusInOrderByIdDesc(Collection<OrderStatus> statuses);
 

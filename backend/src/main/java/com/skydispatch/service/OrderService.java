@@ -39,10 +39,13 @@ public class OrderService {
 
     private final DeliveryOrderRepository orderRepository;
     private final SequenceService sequenceService;
+    private final EventService eventService;
 
-    public OrderService(DeliveryOrderRepository orderRepository, SequenceService sequenceService) {
+    public OrderService(DeliveryOrderRepository orderRepository, SequenceService sequenceService,
+                        EventService eventService) {
         this.orderRepository = orderRepository;
         this.sequenceService = sequenceService;
+        this.eventService = eventService;
     }
 
     /** 创建订单。 */
@@ -67,6 +70,8 @@ public class OrderService {
                 .build();
 
         DeliveryOrder saved = orderRepository.save(order);
+        // 记一条"下单"事件：链路追踪的时间线必须从下单开始，否则新订单看起来像凭空出现
+        eventService.orderCreated(saved);
         log.info("创建订单: orderNo={}, 重量={}kg, 优先级={}", saved.getOrderNo(), saved.getWeightKg(), saved.getPriority());
         return OrderDtos.Response.from(saved);
     }
@@ -74,10 +79,25 @@ public class OrderService {
     /** 分页查询。 */
     @Transactional(readOnly = true)
     public CommonDtos.PageResponse<OrderDtos.Response> list(OrderStatus status, Priority priority, Pageable pageable) {
-        // 组合条件直接交给 Spring Data 生成 SQL；只有"仅按优先级"这一种情况走内存过滤，
-        // 因为 MVP 阶段没必要为它单独加一个索引。
+        return list(status, null, priority, pageable);
+    }
+
+    /**
+     * 分页查询（支持按状态集合过滤）。
+     *
+     * <p>订单页的「流水线阶段」一次代表多个状态（例如待派单 = CREATED + PLANNING + QUEUED），
+     * 用 statuses 比让前端发三次请求再合并更简单，也保证分页总数正确。
+     * statuses 非空时优先于单个 status。
+     */
+    @Transactional(readOnly = true)
+    public CommonDtos.PageResponse<OrderDtos.Response> list(OrderStatus status, List<OrderStatus> statuses,
+                                                            Priority priority, Pageable pageable) {
         Page<DeliveryOrder> page;
-        if (status != null && priority != null) {
+        if (statuses != null && !statuses.isEmpty()) {
+            page = priority != null
+                    ? orderRepository.findByStatusInAndPriority(statuses, priority, pageable)
+                    : orderRepository.findByStatusIn(statuses, pageable);
+        } else if (status != null && priority != null) {
             page = orderRepository.findByStatusAndPriority(status, priority, pageable);
         } else if (status != null) {
             page = orderRepository.findByStatus(status, pageable);
@@ -85,7 +105,8 @@ public class OrderService {
             page = orderRepository.findAll(pageable);
         }
         List<OrderDtos.Response> content = page.getContent().stream()
-                .filter(o -> priority == null || o.getPriority() == priority)
+                .filter(o -> statuses != null && !statuses.isEmpty() ? statuses.contains(o.getStatus())
+                        : priority == null || o.getPriority() == priority)
                 .map(OrderDtos.Response::from)
                 .toList();
         return CommonDtos.PageResponse.of(content, page);
@@ -106,7 +127,9 @@ public class OrderService {
                 .contains(order.getStatus())) {
             throw BusinessException.illegalState("订单 " + order.getOrderNo() + " 当前状态 " + order.getStatus() + " 不能取消");
         }
+        OrderStatus from = order.getStatus();
         order.setStatus(OrderStatus.CANCELLED);
+        eventService.orderStatusChanged(order, from.name(), OrderStatus.CANCELLED.name());
         log.info("取消订单: {}", order.getOrderNo());
         return OrderDtos.Response.from(order);
     }
