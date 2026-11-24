@@ -9,6 +9,7 @@
     "build": "vite build",
     "preview": "vite preview --port 4173",
     "type-check": "vue-tsc --noEmit",
+    "check:api": "node scripts/check-api-contract.mjs",
     "fetch:geo": "node scripts/fetch-china-geo.mjs",
     "postinstall": "node scripts/fetch-china-geo.mjs || exit 0"
   },

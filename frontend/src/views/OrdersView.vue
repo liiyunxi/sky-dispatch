@@ -655,6 +655,53 @@ const traceTab = ref<'timeline' | 'tasks' | 'decisions'>('timeline')
 const traceId = computed(() => (traceOrder.value ? `TRACE-${traceOrder.value.orderNo}` : '—'))
 /** 抽屉头部信息优先用聚合接口返回的最新快照，避免列表数据过期 */
 const traceOrderView = computed<Order | null>(() => trace.value?.order ?? traceOrder.value)
+
+/**
+ * 承诺送达 vs 实际送达 的时序条。
+ *
+ * <p>只看一句"提前/超时 X 分钟"无法判断"这单是紧赶慢赶才赶上，还是提前很多"。
+ * 这里把「下单 → 承诺送达 → 实际送达」放到同一根时间轴上：
+ * 承诺点之后的部分是超时区（红），实际点早于承诺的部分是提前量（绿）。
+ */
+interface SlaTimeline {
+  /** 承诺送达在轴上的位置（%）；没有承诺时间时为 null */
+  promisedPct: number | null
+  /** 实际送达在轴上的位置（%） */
+  deliveredPct: number | null
+  /** 超时区长度（%） */
+  overduePct: number
+  /** 提前量长度（%） */
+  earlyPct: number
+  tone: 'early' | 'late' | 'onTrack' | 'none'
+  text: string
+}
+
+const slaTimeline = computed<SlaTimeline | null>(() => {
+  const order = traceOrderView.value
+  if (!order?.createdAt) return null
+  const created = dayjs(order.createdAt)
+  const promised = order.expectDeliveryAt ? dayjs(order.expectDeliveryAt) : null
+  const delivered = order.deliveredAt ? dayjs(order.deliveredAt) : null
+  const promisedS = promised ? promised.diff(created, 'second') : 0
+  const deliveredS = delivered ? delivered.diff(created, 'second') : 0
+  // 轴长至少 60s，避免"下单 1 秒就送达"把标记挤成一团
+  const totalS = Math.max(60, promisedS, deliveredS)
+
+  const promisedPct = promised ? Math.min(100, Math.max(0, (promisedS / totalS) * 100)) : null
+  const deliveredPct = delivered ? Math.min(100, Math.max(0, (deliveredS / totalS) * 100)) : null
+  const deltaS = delivered && promised ? delivered.diff(promised, 'second') : null
+  const overduePct =
+    deltaS != null && deltaS > 0 && promisedPct != null
+      ? Math.max(0, (deliveredPct ?? 100) - promisedPct)
+      : 0
+  const earlyPct =
+    deltaS != null && deltaS < 0 && promisedPct != null
+      ? Math.max(0, promisedPct - (deliveredPct ?? 0))
+      : 0
+  const tone: SlaTimeline['tone'] =
+    deltaS == null ? 'none' : deltaS > 0 ? 'late' : deltaS < 0 ? 'early' : 'onTrack'
+  return { promisedPct, deliveredPct, overduePct, earlyPct, tone, text: slaOf(order).text }
+})
 const traceEvents = computed<EventLogItem[]>(() => trace.value?.events ?? [])
 const traceTasks = computed<DispatchTask[]>(() => trace.value?.tasks ?? [])
 /**
@@ -1326,6 +1373,59 @@ async function loadZones(): Promise<void> {
               <span><em>期望送达</em>{{ formatDateTime(traceOrderView?.expectDeliveryAt) }}</span>
               <span><em>实际送达</em>{{ formatDateTime(traceOrderView?.deliveredAt) }}</span>
               <span><em>执行无人机</em>{{ traceLatestTask?.droneCode ?? (traceOrderView ? droneLabel(traceOrderView) : '—') }}</span>
+            </div>
+          </div>
+
+          <!-- 承诺送达 vs 实际送达：同一根时间轴，提前量/超时区一眼可见 -->
+          <div v-if="slaTimeline" class="sla-timeline" :class="`is-${slaTimeline.tone}`">
+            <div class="sla-timeline-head">
+              <span class="sla-timeline-title">承诺送达 vs 实际送达</span>
+              <span class="sla-timeline-verdict">{{ slaTimeline.text }}</span>
+            </div>
+            <div class="sla-axis">
+              <span
+                v-if="slaTimeline.promisedPct != null"
+                class="sla-window"
+                :style="{ width: `${slaTimeline.promisedPct}%` }"
+              />
+              <span
+                v-if="slaTimeline.overduePct > 0"
+                class="sla-band is-overdue"
+                :style="{
+                  left: `${slaTimeline.promisedPct ?? 0}%`,
+                  width: `${slaTimeline.overduePct}%`,
+                }"
+              />
+              <span
+                v-if="slaTimeline.earlyPct > 0"
+                class="sla-band is-early"
+                :style="{
+                  left: `${slaTimeline.deliveredPct ?? 0}%`,
+                  width: `${slaTimeline.earlyPct}%`,
+                }"
+              />
+              <i class="sla-pin is-created" style="left: 0%" title="下单" />
+              <i
+                v-if="slaTimeline.promisedPct != null"
+                class="sla-pin is-promised"
+                :style="{ left: `${slaTimeline.promisedPct}%` }"
+                title="承诺送达"
+              />
+              <i
+                v-if="slaTimeline.deliveredPct != null"
+                class="sla-pin is-delivered"
+                :style="{ left: `${slaTimeline.deliveredPct}%` }"
+                title="实际送达"
+              />
+            </div>
+            <div class="sla-axis-labels">
+              <span>下单 {{ formatDateTime(traceOrderView?.createdAt) }}</span>
+              <span v-if="traceOrderView?.expectDeliveryAt" class="is-promised">
+                承诺 {{ formatDateTime(traceOrderView?.expectDeliveryAt) }}
+              </span>
+              <span v-if="traceOrderView?.deliveredAt" class="is-delivered">
+                实际 {{ formatDateTime(traceOrderView?.deliveredAt) }}
+              </span>
             </div>
           </div>
 
@@ -2509,6 +2609,130 @@ async function loadZones(): Promise<void> {
   margin-right: 4px;
   font-style: normal;
   color: rgba(150, 199, 232, 0.55);
+}
+
+/* ---------------- 承诺送达 vs 实际送达 ---------------- */
+.sla-timeline {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(56, 232, 255, 0.14);
+  background: rgba(8, 21, 35, 0.6);
+}
+
+.sla-timeline-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 10px;
+}
+
+.sla-timeline-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #d9f6ff;
+}
+
+.sla-timeline-verdict {
+  font-size: 11px;
+  color: rgba(150, 199, 232, 0.7);
+}
+
+.sla-timeline.is-early .sla-timeline-verdict {
+  color: #8bffdc;
+}
+
+.sla-timeline.is-late .sla-timeline-verdict {
+  color: #ff9a9a;
+}
+
+.sla-axis {
+  position: relative;
+  height: 8px;
+  margin: 6px 2px 18px;
+  background: rgba(56, 232, 255, 0.08);
+}
+
+/* 下单 → 承诺：计划时间窗 */
+.sla-window {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, rgba(22, 119, 255, 0.45), rgba(56, 232, 255, 0.35));
+  box-shadow: inset 0 0 8px rgba(56, 232, 255, 0.25);
+}
+
+/* 承诺点之后的超时区 / 实际早于承诺的提前量 */
+.sla-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.sla-band.is-overdue {
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(255, 96, 96, 0.55) 0 4px,
+    rgba(255, 96, 96, 0.2) 4px 8px
+  );
+  box-shadow: 0 0 10px rgba(255, 96, 96, 0.35);
+}
+
+.sla-band.is-early {
+  background: rgba(47, 214, 165, 0.3);
+}
+
+.sla-pin {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  border: 1px solid #07131f;
+  transform: translateY(-50%);
+}
+
+.sla-pin.is-created {
+  background: #94a3b8;
+}
+
+.sla-pin.is-promised {
+  background: #38e8ff;
+  box-shadow: 0 0 8px rgba(56, 232, 255, 0.9);
+}
+
+.sla-pin.is-delivered {
+  background: #2fd6a5;
+  box-shadow: 0 0 8px rgba(47, 214, 165, 0.9);
+}
+
+.sla-timeline.is-late .sla-pin.is-delivered {
+  background: #ff6060;
+  box-shadow: 0 0 8px rgba(255, 96, 96, 0.9);
+}
+
+.sla-axis-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 10px;
+  color: rgba(150, 199, 232, 0.55);
+}
+
+.sla-axis-labels .is-promised {
+  color: #9ff0ff;
+}
+
+.sla-axis-labels .is-delivered {
+  color: #8bffdc;
+}
+
+.sla-timeline.is-late .sla-axis-labels .is-delivered {
+  color: #ff9a9a;
 }
 
 /* ---------------- 阶段轨 ---------------- */

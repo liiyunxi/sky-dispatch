@@ -141,10 +141,13 @@ public class RouteService {
                 .toList();
 
         double distanceM = waypoints.get(waypoints.size() - 1).cumulativeDistanceM();
-        // 统一 ETA 口径：爬升 + 下降 + 风修正后的水平巡航 + 起降开销
-        double bearing = com.skydispatch.common.GeoUtils.bearingDegrees(
-                start.lat(), start.lon(), goal.lat(), goal.lon());
-        int durationS = timeEstimator.estimate(distanceM, model, altitude, bearing).seconds();
+        // 统一 ETA 口径：逐航段按各自航向取规划风累加，再叠加爬升/下降/起降开销
+        List<GeoPoint> polyline = waypoints.stream()
+                .map(w -> new GeoPoint(w.lat(), w.lon()))
+                .toList();
+        int durationS = timeEstimator.estimateRoute(polyline, model, altitude).seconds();
+        // 航路点 ETA 按"累计飞行时间"占比分摊：各段地速不同，按距离分摊会失真
+        double[] cumulativeFlightS = cumulativeFlightSeconds(polyline, model, altitude);
         /*
          * 计划能耗按完整任务估算：空载调机 + 去程载货 + 回程空载 + 两次起降。
          * 调机段距离要与派单时的续航校验保持同一口径，
@@ -155,7 +158,17 @@ public class RouteService {
                 model, deadheadM, distanceM, order.getWeightKg().doubleValue());
 
         return new PlannedRoute(algorithm, waypoints, planElapsedMs, rawResponse,
-                distanceM, durationS, energyWh, cruiseSpeed);
+                distanceM, durationS, energyWh, cruiseSpeed, cumulativeFlightS);
+    }
+
+    /** 每个航路点的累计水平飞行时间（秒）；段与段的地速不同，不能简单按距离摊。 */
+    private double[] cumulativeFlightSeconds(List<GeoPoint> polyline, DroneModel model, double altitude) {
+        double[] cumulative = new double[polyline.size()];
+        for (int i = 1; i < polyline.size(); i++) {
+            cumulative[i] = cumulative[i - 1]
+                    + timeEstimator.segmentSeconds(polyline.get(i - 1), polyline.get(i), model, altitude);
+        }
+        return cumulative;
     }
 
     /**
@@ -182,8 +195,17 @@ public class RouteService {
 
         int totalEta = planned.durationS();
         double totalDistance = Math.max(1e-6, planned.distanceM());
+        double[] cumulativeS = planned.cumulativeFlightSeconds();
+        boolean timeWeighted = cumulativeS != null && cumulativeS.length == planned.waypoints().size()
+                && cumulativeS[cumulativeS.length - 1] > 1e-6;
+        double totalFlightS = timeWeighted ? cumulativeS[cumulativeS.length - 1] : 1.0;
         List<FlightWaypoint> entities = new ArrayList<>(planned.waypoints().size());
-        for (AlgorithmDtos.Waypoint wp : planned.waypoints()) {
+        for (int i = 0; i < planned.waypoints().size(); i++) {
+            AlgorithmDtos.Waypoint wp = planned.waypoints().get(i);
+            // 航路点 ETA：优先按累计飞行时间占比分摊，退化时按累计距离占比
+            int etaSeconds = timeWeighted
+                    ? (int) Math.round(totalEta * cumulativeS[i] / totalFlightS)
+                    : (int) Math.round(totalEta * wp.cumulativeDistanceM() / totalDistance);
             entities.add(FlightWaypoint.builder()
                     .routeId(saved.getId())
                     .seq(wp.seq())
@@ -191,8 +213,7 @@ public class RouteService {
                     .lon(wp.lon())
                     .altitudeM(BigDecimal.valueOf(wp.altitudeM()).setScale(2, RoundingMode.HALF_UP))
                     .cumulativeDistanceM(BigDecimal.valueOf(wp.cumulativeDistanceM()).setScale(2, RoundingMode.HALF_UP))
-                    // 航路点 ETA 按累计距离占比分摊总 ETA，口径与任务预计耗时一致
-                    .etaSeconds((int) Math.round(totalEta * wp.cumulativeDistanceM() / totalDistance))
+                    .etaSeconds(etaSeconds)
                     .build());
         }
         waypointRepository.saveAll(entities);
@@ -228,7 +249,9 @@ public class RouteService {
             double distanceM,
             int durationS,
             BigDecimal energyWh,
-            double cruiseSpeedMps
+            double cruiseSpeedMps,
+            /** 每个航路点的累计水平飞行时间（秒），用于航路点 ETA 的时间占比分摊。 */
+            double[] cumulativeFlightSeconds
     ) {
     }
 

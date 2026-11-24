@@ -114,6 +114,19 @@ public class AirspaceZone {
     @Column(name = "active_to_sim_sec")
     private Long activeToSimSec;
 
+    /**
+     * 在给定仿真时刻是否生效。
+     *
+     * <p>把时间窗判断放在实体上，规划、冲突检测与单元测试共用同一套边界语义，
+     * 避免"规划认为生效、冲突检测认为没生效"这种口径分裂。
+     */
+    public boolean activeAt(double simTimeS) {
+        if (activeFromSimSec != null && simTimeS < activeFromSimSec) {
+            return false;
+        }
+        return activeToSimSec == null || simTimeS <= activeToSimSec;
+    }
+
     /** 是否启用；停用而不删除，保留历史冲突引用。 */
     @Column(name = "enabled", nullable = false)
     private Boolean enabled;

@@ -632,6 +632,41 @@ export interface SimulationRuntimeState {
 }
 
 // ---------------------------------------------------------------------------
+// 演示场景编排与运行回放
+// ---------------------------------------------------------------------------
+
+export type ScenarioKey = 'PEAK_DEMAND' | 'FAULT_STORM' | 'TEMP_NO_FLY' | 'CHARGING_SURGE'
+
+export interface ScenarioInfo {
+  key: ScenarioKey
+  title: string
+  description: string
+  /** 触发后会影响什么（订单数/无人机数/空域） */
+  impact: string
+  /** 风险提示 */
+  risk: string
+}
+
+export interface ScenarioResult {
+  key: ScenarioKey
+  title: string
+  message: string
+  details: string[]
+  simTimeS: number
+  ts: string
+}
+
+/** 运行事件回放：只还原事件时间线，不重建每一拍的坐标。 */
+export interface SimulationReplay {
+  runId: number
+  runName: string
+  status: RunStatus
+  maxSimTimeS: number
+  tickCount: number
+  events: EventLogItem[]
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket 消息
 // ---------------------------------------------------------------------------
 

@@ -25,6 +25,10 @@ import type {
   PageResponse,
   Priority,
   DroneFrame,
+  ScenarioInfo,
+  ScenarioKey,
+  ScenarioResult,
+  SimulationReplay,
   SimulationRun,
   SimulationRuntimeState,
   Snapshot,
@@ -100,6 +104,9 @@ export const droneApi = {
 export const airspaceApi = {
   list: () => http.get<AirspaceZone[]>('/airspace/zones'),
   create: (body: ZoneCreateRequest) => http.post<AirspaceZone>('/airspace/zones', body),
+  /** 编辑空域：类型/形状/高度带/时间窗/启停可改，编码保持不变 */
+  updateZone: (id: number, body: ZoneCreateRequest) =>
+    http.put<AirspaceZone>(`/airspace/zones/${id}`, body),
   remove: (id: number) => http.delete<{ success: boolean; message: string }>(`/airspace/zones/${id}`),
 }
 
@@ -178,6 +185,18 @@ export const simulationApi = {
   resume: () => http.post<SimulationRuntimeState>('/simulation/resume'),
   /** 人工注入飞行故障（下一拍生效，演示时可精确复现） */
   injectFault: (body: FaultRequest) => http.post<FaultResponse>('/simulation/fault', body),
+  /** 运行事件回放（按仿真时间顺序） */
+  replay: (runId: number) => http.get<SimulationReplay>(`/simulation/runs/${runId}/replay`, undefined, true),
+}
+
+// ---------------------------------------------------------------------------
+// 演示场景编排
+// ---------------------------------------------------------------------------
+export const scenarioApi = {
+  /** 可一键触发的演示剧本（文案由后端下发） */
+  catalog: () => http.get<ScenarioInfo[]>('/scenarios'),
+  /** 触发剧本：走正常业务路径并记录 SCENARIO 事件 */
+  trigger: (key: ScenarioKey) => http.post<ScenarioResult>(`/scenarios/${key}`),
 }
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   AimOutlined,
+  EditOutlined,
   MinusCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -75,6 +76,8 @@ const SEVERITY_HEX: Record<string, string> = {
 const loading = ref(false)
 const submitting = ref(false)
 const modalOpen = ref(false)
+/** 非空表示正在编辑该空域（提交走 PUT），为空表示新增 */
+const editingId = ref<number | null>(null)
 const zones = ref<AirspaceZone[]>([])
 
 /** 卡片 / 地图联动选中的空域 id */
@@ -500,6 +503,35 @@ function resetForm(): void {
 
 function openModal(): void {
   resetForm()
+  editingId.value = null
+  modalOpen.value = true
+}
+
+/** 打开编辑：把现有空域回填进同一套表单（形状/高度带/时间窗都能改） */
+function openEditModal(zone: AirspaceZone): void {
+  resetForm()
+  editingId.value = zone.id
+  form.value = {
+    code: zone.code,
+    name: zone.name ?? '',
+    zoneType: zone.zoneType,
+    shapeType: zone.shapeType,
+    centerLat: Number(zone.center?.lat ?? 31.2304),
+    centerLon: Number(zone.center?.lon ?? 121.4737),
+    radiusM: Number(zone.radiusM ?? 1000),
+    minAltitudeM: Number(zone.minAltitudeM ?? 0),
+    maxAltitudeM: Number(zone.maxAltitudeM ?? 120),
+    severity: zone.severity ?? null,
+    enabled: zone.enabled !== false,
+    activeFromSimSec: zone.activeFromSimSec ?? null,
+    activeToSimSec: zone.activeToSimSec ?? null,
+    remark: zone.remark ?? '',
+  }
+  const existing = (zone.points ?? []).map((point) => ({
+    lat: Number(point.lat),
+    lon: Number(point.lon),
+  }))
+  points.value = existing.length >= 3 ? existing : [emptyPoint(), emptyPoint(), emptyPoint()]
   modalOpen.value = true
 }
 
@@ -582,12 +614,20 @@ async function submitZone(): Promise<void> {
 
   submitting.value = true
   try {
-    const created = await airspaceApi.create(body)
-    message.success(`空域「${created.name}」（${created.code}）新增成功`)
+    const saved =
+      editingId.value === null
+        ? await airspaceApi.create(body)
+        : await airspaceApi.updateZone(editingId.value, body)
+    message.success(
+      editingId.value === null
+        ? `空域「${saved.name}」（${saved.code}）新增成功`
+        : `空域「${saved.name}」（${saved.code}）已保存`,
+    )
     modalOpen.value = false
+    editingId.value = null
     resetForm()
     await loadZones()
-    selectedZoneId.value = created.id ?? null
+    selectedZoneId.value = saved.id ?? null
   } catch {
     // 失败保持弹窗内容，便于修正后重试
   } finally {
@@ -687,7 +727,7 @@ onMounted(() => {
       <div class="risk-note">
         <WarningOutlined />
         <span>
-          禁飞区与限飞区会立即参与路径规划：新增或删除后，后续所有派单都会把启用中的空域作为障碍物传给算法服务。
+          禁飞区与限飞区会立即参与路径规划：新增、编辑或删除后，后续所有派单都会把启用中的空域作为障碍物传给算法服务。
         </span>
       </div>
 
@@ -929,6 +969,10 @@ onMounted(() => {
               <template #icon><AimOutlined /></template>
               定位
             </a-button>
+            <a-button type="link" size="small" @click.stop="openEditModal(zone)">
+              <template #icon><EditOutlined /></template>
+              编辑
+            </a-button>
             <a-popconfirm
               title="确认删除该空域？删除后不再参与路径规划。"
               ok-text="确认删除"
@@ -951,7 +995,7 @@ onMounted(() => {
     <!-- ------------------------------ 新增空域弹窗 ------------------------------ -->
     <a-modal
       v-model:open="modalOpen"
-      title="新增空域"
+      :title="editingId === null ? '新增空域' : `编辑空域 ${form.code}`"
       :width="760"
       ok-text="提交"
       cancel-text="取消"
@@ -963,8 +1007,19 @@ onMounted(() => {
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-item label="空域编码（可留空）">
-              <a-input v-model:value="form.code" placeholder="留空则自动生成，如 NFZ-0001" allow-clear />
-              <div class="field-hint">前缀按类型派生：禁飞区 NFZ / 限飞区 RFA / 走廊 CRD / 警示区 WRN</div>
+              <a-input
+                v-model:value="form.code"
+                placeholder="留空则自动生成，如 NFZ-0001"
+                :disabled="editingId !== null"
+                allow-clear
+              />
+              <div class="field-hint">
+                {{
+                  editingId === null
+                    ? '前缀按类型派生：禁飞区 NFZ / 限飞区 RFA / 走廊 CRD / 警示区 WRN'
+                    : '编码是空域身份，编辑时不可修改'
+                }}
+              </div>
             </a-form-item>
           </a-col>
           <a-col :span="12">

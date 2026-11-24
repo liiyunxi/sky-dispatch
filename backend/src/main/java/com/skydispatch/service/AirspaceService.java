@@ -110,10 +110,68 @@ public class AirspaceService {
         return AirspaceDtos.Response.from(saved, parsePolygonWkt(saved.getPolygonWkt()));
     }
 
+    /**
+     * 编辑空域。
+     *
+     * <p>编码是身份不随编辑改变；类型、形状、高度带、时间窗、启停都可改。
+     * 形状切换时清掉另一种形状的残留字段，避免"圆形还带着旧多边形 WKT"这类脏数据。
+     */
+    @Transactional
+    public AirspaceDtos.Response update(Long id, AirspaceDtos.ZoneRequest request) {
+        AirspaceZone zone = zoneRepository.findById(id)
+                .orElseThrow(() -> BusinessException.notFound("空域 id=" + id));
+        ZoneNaming naming = ZONE_NAMING.getOrDefault(request.zoneType(),
+                new ZoneNaming("ZN", "空域", ConflictSeverity.HIGH));
+
+        if (request.name() != null && !request.name().isBlank()) {
+            zone.setName(request.name().trim());
+        }
+        zone.setZoneType(request.zoneType());
+        zone.setShapeType(request.shapeType());
+        zone.setMinAltitudeM(request.minAltitudeM() == null ? BigDecimal.ZERO : request.minAltitudeM());
+        zone.setMaxAltitudeM(request.maxAltitudeM() == null
+                ? BigDecimal.valueOf(120) : request.maxAltitudeM());
+        zone.setSeverity(request.severity() == null ? naming.severity() : request.severity());
+        zone.setEnabled(request.enabled() == null || request.enabled());
+        zone.setEffectiveFrom(request.effectiveFrom());
+        zone.setEffectiveTo(request.effectiveTo());
+        zone.setActiveFromSimSec(request.activeFromSimSec());
+        zone.setActiveToSimSec(request.activeToSimSec());
+        zone.setRemark(request.remark());
+
+        if (request.shapeType() == ZoneShape.CIRCLE) {
+            if (request.center() == null || request.radiusM() == null) {
+                throw BusinessException.invalidParam("圆形空域必须提供 center 和 radiusM");
+            }
+            zone.setCenterLat(request.center().lat());
+            zone.setCenterLon(request.center().lon());
+            zone.setRadiusM(request.radiusM());
+            zone.setPolygonWkt(null);
+        } else {
+            if (request.points() == null || request.points().size() < 3) {
+                throw BusinessException.invalidParam("多边形空域至少需要 3 个顶点");
+            }
+            for (CommonDtos.GeoDto point : request.points()) {
+                if (point == null || point.lat() == null || point.lon() == null) {
+                    throw BusinessException.invalidParam("多边形顶点必须包含 lat 与 lon");
+                }
+            }
+            zone.setPolygonWkt(toWkt(request.points()));
+            zone.setCenterLat(null);
+            zone.setCenterLon(null);
+            zone.setRadiusM(null);
+        }
+
+        AirspaceZone saved = zoneRepository.save(zone);
+        log.info("编辑空域: code={}, type={}, 时间窗={}~{}",
+                saved.getCode(), saved.getZoneType(),
+                saved.getActiveFromSimSec(), saved.getActiveToSimSec());
+        return AirspaceDtos.Response.from(saved, parsePolygonWkt(saved.getPolygonWkt()));
+    }
+
     // ------------------------------------------------------------------
     // 自动命名（编码 / 名称 / 默认严重度）
     // ------------------------------------------------------------------
-
     /** 一个区域类型的"自动命名三件套"：编码前缀、中文名、默认严重度。 */
     private record ZoneNaming(String prefix, String label, ConflictSeverity severity) {
     }
@@ -222,12 +280,7 @@ public class AirspaceService {
 
     /** 空域在给定仿真时刻是否生效（处理临时管制的时间窗）。 */
     public boolean activeAt(AirspaceZone zone, double simTimeS) {
-        Long from = zone.getActiveFromSimSec();
-        Long to = zone.getActiveToSimSec();
-        if (from != null && simTimeS < from) {
-            return false;
-        }
-        return to == null || simTimeS <= to;
+        return zone.activeAt(simTimeS);
     }
 
     /**
@@ -309,6 +362,14 @@ public class AirspaceService {
                         continue;
                     }
                     points.add(new GeoPoint(lat, lon));
+                }
+            }
+            // WKT 首尾闭环：把最后重复的首点去掉，对外只暴露真实顶点
+            if (points.size() > 1) {
+                GeoPoint first = points.get(0);
+                GeoPoint last = points.get(points.size() - 1);
+                if (first.lat() == last.lat() && first.lon() == last.lon()) {
+                    points.remove(points.size() - 1);
                 }
             }
             return points;

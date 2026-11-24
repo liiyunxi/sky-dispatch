@@ -36,4 +36,7 @@ public interface EventLogRepository extends JpaRepository<EventLog, Long> {
 
     /** 取最近 200 条日志，实时侧栏用。 */
     List<EventLog> findTop200ByOrderByTsDesc();
+
+    /** 运行回放：按仿真时间顺序取某一轮的事件（带分页上限，防止一次拉爆）。 */
+    List<EventLog> findByRunIdOrderBySimTimeSAscIdAsc(Long runId, Pageable pageable);
 }

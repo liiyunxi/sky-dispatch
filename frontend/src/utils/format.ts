@@ -266,6 +266,10 @@ export const EVENT_TYPE_TEXT: Record<string, string> = {
   FAULT_POWER_LOSS: '动力系统失效',
   FAULT_COMM_LOSS: '通信中断',
   FAULT_GPS_DRIFT: 'GPS 定位漂移',
+  SCENARIO_PEAK_DEMAND: '演示 · 高峰订单',
+  SCENARIO_FAULT_STORM: '演示 · 故障风暴',
+  SCENARIO_TEMP_NO_FLY: '演示 · 临时禁飞',
+  SCENARIO_CHARGING_SURGE: '演示 · 补能压力',
 }
 
 export function eventTypeText(type: string): string {

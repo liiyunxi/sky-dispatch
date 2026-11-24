@@ -12,6 +12,7 @@ import com.skydispatch.engine.SimulationMetrics;
 import com.skydispatch.engine.SimulationRuntimeState;
 import com.skydispatch.engine.SimulationService;
 import com.skydispatch.service.DroneService;
+import com.skydispatch.service.ReplayService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -50,6 +51,7 @@ public class SimulationController {
     private final DroneService droneService;
     private final SkyProperties properties;
     private final SimulationMetrics metrics;
+    private final ReplayService replayService;
 
     public SimulationController(SimulationService simulationService,
                                 SimulationEngine simulationEngine,
@@ -57,7 +59,8 @@ public class SimulationController {
                                 FaultInjectionService faultInjection,
                                 DroneService droneService,
                                 SkyProperties properties,
-                                SimulationMetrics metrics) {
+                                SimulationMetrics metrics,
+                                ReplayService replayService) {
         this.simulationService = simulationService;
         this.simulationEngine = simulationEngine;
         this.runtimeState = runtimeState;
@@ -65,6 +68,7 @@ public class SimulationController {
         this.droneService = droneService;
         this.properties = properties;
         this.metrics = metrics;
+        this.replayService = replayService;
     }
 
     @GetMapping("/perf")
@@ -139,6 +143,13 @@ public class SimulationController {
     public ApiResponse<SimulationDtos.RunResponse> current() {
         var run = simulationService.currentOrNull();
         return ApiResponse.ok(run == null ? null : simulationService.toResponse(run));
+    }
+
+    @GetMapping("/runs/{id}/replay")
+    @Operation(summary = "运行事件回放",
+            description = "按仿真时间顺序返回该轮的事件（最多 2000 条），用于复盘派单、起飞、冲突、故障与失败")
+    public ApiResponse<SimulationDtos.ReplayResponse> replay(@PathVariable Long id) {
+        return ApiResponse.ok(replayService.replay(id));
     }
 
     @PostMapping("/tick")

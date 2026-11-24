@@ -32,6 +32,12 @@ import { DRONE_STATUS_HEX } from '@/utils/format'
 /** 垂直放大倍数（见文件头说明） */
 const VERTICAL_EXAGGERATION = 3
 /**
+ * 巡航高度层（米）：与后端 sky.flight.altitude-layers-m 默认值 [62,80,98,116] 对齐。
+ * 每一层在 3D 里铺一片半透明水平面，回答"飞机到底在哪一层飞"。
+ */
+const ALTITUDE_LAYERS_M = [62, 80, 98, 116]
+const ALTITUDE_LAYER_COLORS = [0x38e8ff, 0x52c41a, 0xfaad14, 0xff7a45]
+/**
  * 无人机示意翼展（米）。
  *
  * 真机 1m 翼展在"一座城市"的视野下不足一个像素，所以给一个示意尺寸。
@@ -176,6 +182,10 @@ let pinGroup: THREE.Group | null = null
 let droneGroup: THREE.Group | null = null
 /** 充电站（静态，随视野重建） */
 let stationGroup: THREE.Group | null = null
+/** 高度层参考面（静态，随视野与开关重建） */
+let altitudeGroup: THREE.Group | null = null
+/** 是否显示高度层参考面 */
+const showAltitudeLayers = ref(true)
 
 interface DroneVisual {
   root: THREE.Group
@@ -451,6 +461,10 @@ function rebuildStatic(): void {
     world.remove(stationGroup)
     disposeObject(stationGroup)
   }
+  if (altitudeGroup) {
+    world.remove(altitudeGroup)
+    disposeObject(altitudeGroup)
+  }
 
   // ---- 地面 + 网格 ----
   groundGroup = new THREE.Group()
@@ -477,6 +491,43 @@ function rebuildStatic(): void {
   )
   groundGroup.add(axis)
   world.add(groundGroup)
+
+  // ---- 高度层参考面：每条巡航高度层一片半透明水平面 + 边框 ----
+  altitudeGroup = new THREE.Group()
+  if (showAltitudeLayers.value) {
+    const layerSize = groundSize * 0.82
+    const planeGeo = new THREE.PlaneGeometry(layerSize, layerSize)
+    const borderGeo = new THREE.EdgesGeometry(planeGeo)
+    ALTITUDE_LAYERS_M.forEach((altitude, index) => {
+      const color = ALTITUDE_LAYER_COLORS[index % ALTITUDE_LAYER_COLORS.length]
+      const y = altitude * VERTICAL_EXAGGERATION
+
+      // 面：极低透明度，只提供"这一层的高度"的视觉锚点，不遮挡地面与楼群
+      const plane = new THREE.Mesh(
+        planeGeo,
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.045,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      )
+      plane.rotation.x = -Math.PI / 2
+      plane.position.y = y
+      altitudeGroup!.add(plane)
+
+      // 边框：斜视时平面本身几乎不可见，靠一圈细线标出层的边界
+      const border = new THREE.LineSegments(
+        borderGeo,
+        new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.3 }),
+      )
+      border.rotation.x = -Math.PI / 2
+      border.position.y = y
+      altitudeGroup!.add(border)
+    })
+  }
+  world.add(altitudeGroup)
 
   // ---- 空域体块 ----
   zoneGroup = new THREE.Group()
@@ -1105,6 +1156,14 @@ watch(() => props.active, (active) => {
   void nextTick(() => resize())
 })
 
+// 高度层参考面开关：重建静态内容（面很少，重建比逐个显隐更简单可靠）
+watch(showAltitudeLayers, () => rebuildStatic())
+
+/** HUD 高度层图例的色值（0xRRGGBB → #rrggbb） */
+function altitudeLayerHex(index: number): string {
+  return `#${ALTITUDE_LAYER_COLORS[index % ALTITUDE_LAYER_COLORS.length].toString(16).padStart(6, '0')}`
+}
+
 defineExpose({
   frameArea: (lat: number, lon: number, span: number) => frameArea(lat, lon, span),
   updateFrames: (frames: PoseFrame[]) => updateFrames(frames),
@@ -1126,6 +1185,19 @@ defineExpose({
       </div>
       <div v-if="elevationLabel" class="scene3d-meta">{{ elevationLabel }}</div>
       <div v-if="centerLabel" class="scene3d-meta">{{ centerLabel }}</div>
+      <!-- 高度层参考面：回答"飞机在哪一层飞"，图例把层高与颜色对上 -->
+      <div class="scene3d-alt">
+        <label class="scene3d-alt-toggle">
+          <a-switch v-model:checked="showAltitudeLayers" size="small" />
+          <span>高度层参考面</span>
+        </label>
+        <div v-if="showAltitudeLayers" class="scene3d-alt-list">
+          <span v-for="(altitude, index) in ALTITUDE_LAYERS_M" :key="altitude" class="scene3d-alt-item">
+            <i :style="{ background: altitudeLayerHex(index) }" />
+            {{ altitude }} m
+          </span>
+        </div>
+      </div>
       <div class="scene3d-meta scene3d-meta-sub">
         <span class="scene3d-key">W</span><span class="scene3d-key">A</span><span class="scene3d-key">S</span><span class="scene3d-key">D</span> 按住移动 ·
         <span class="scene3d-key">Q</span><span class="scene3d-key">E</span> 改范围 · 拖拽旋转 · 滚轮推拉 · 点击飞机可选中
@@ -1174,6 +1246,44 @@ defineExpose({
 
 .scene3d-meta-sub {
   color: rgba(180, 208, 232, 0.5);
+}
+
+/* 高度层开关与图例：HUD 整体不接收鼠标，这里单独打开 */
+.scene3d-alt {
+  pointer-events: auto;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(34, 211, 238, 0.18);
+}
+
+.scene3d-alt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(200, 224, 245, 0.82);
+  cursor: pointer;
+}
+
+.scene3d-alt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  margin-top: 3px;
+}
+
+.scene3d-alt-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(180, 208, 232, 0.72);
+}
+
+.scene3d-alt-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  box-shadow: 0 0 6px currentColor;
 }
 
 /* 键位提示里的单键小方块：让"这些字母是可按的键"一眼可辨，而不是正文里的字 */

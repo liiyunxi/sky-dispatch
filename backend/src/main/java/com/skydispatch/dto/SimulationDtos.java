@@ -6,6 +6,7 @@ import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 
 /**
  * 仿真运行相关的请求/响应模型。
@@ -64,6 +65,22 @@ public final class SimulationDtos {
             String runStatus,
             BigDecimal simTimeS,
             Long tickCount
+    ) {
+    }
+
+    /**
+     * 运行事件回放。
+     *
+     * <p>只回放 {@code event_log} 里的事件，不重建每一拍的无人机坐标——
+     * 坐标属于高频遥测，当前不做全量留存；事件回放用于复盘"谁在什么时候做了什么"。
+     */
+    public record ReplayResponse(
+            Long runId,
+            String runName,
+            RunStatus status,
+            BigDecimal maxSimTimeS,
+            Long tickCount,
+            List<TaskDtos.EventResponse> events
     ) {
     }
 

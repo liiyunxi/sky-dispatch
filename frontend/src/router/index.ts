@@ -54,6 +54,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/InfrastructureView.vue'),
     meta: { title: '基础设施' },
   },
+  {
+    path: '/demo',
+    name: 'demo',
+    component: () => import('@/views/DemoView.vue'),
+    meta: { title: '演示中心' },
+  },
   // 兜底：未知路径回看板（比显示 404 页面对运营更友好）
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

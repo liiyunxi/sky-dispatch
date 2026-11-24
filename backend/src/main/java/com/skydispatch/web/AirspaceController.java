@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -46,6 +47,14 @@ public class AirspaceController {
     @Operation(summary = "查询全部空域")
     public ApiResponse<List<AirspaceDtos.Response>> list() {
         return ApiResponse.ok(airspaceService.list());
+    }
+
+    @PutMapping("/zones/{id}")
+    @Operation(summary = "编辑空域",
+            description = "可修改类型/形状/高度带/仿真时间窗/启停；编码保持不变")
+    public ApiResponse<AirspaceDtos.Response> update(@PathVariable Long id,
+                                                     @Valid @RequestBody AirspaceDtos.ZoneRequest request) {
+        return ApiResponse.ok(airspaceService.update(id, request));
     }
 
     @DeleteMapping("/zones/{id}")

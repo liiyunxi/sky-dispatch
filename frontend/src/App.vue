@@ -9,6 +9,7 @@ import {
   CarryOutOutlined,
   ClusterOutlined,
   DashboardOutlined,
+  ExperimentOutlined,
   GlobalOutlined,
   LogoutOutlined,
   PauseCircleOutlined,
@@ -159,6 +160,7 @@ const menus = [
   { key: '/drones', title: '机队管理', icon: AppstoreOutlined },
   { key: '/airspace', title: '空域管理', icon: GlobalOutlined },
   { key: '/infrastructure', title: '基础设施', icon: ClusterOutlined },
+  { key: '/demo', title: '演示中心', icon: ExperimentOutlined },
 ]
 
 /** 实时通道状态 → 徽标颜色与文案 */

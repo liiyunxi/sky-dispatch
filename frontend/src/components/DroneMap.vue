@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import L from 'leaflet'
 import { message } from 'ant-design-vue'
 import { FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons-vue'
@@ -353,6 +353,63 @@ const showAdminLabels = ref(true)
 /** 订单标记图层（取货站点 + 送货目的地） */
 let orderLayer: L.LayerGroup | null = null
 
+// ---------------------------------------------------------------------------
+// 图层开关：空域 / 建筑 / 地形 / 充电站 / 航路 / 订单 / 无人机（含尾迹与航向锥）
+// ---------------------------------------------------------------------------
+
+const layerVisibility = reactive({
+  airspace: true,
+  buildings: true,
+  terrains: true,
+  stations: true,
+  routes: true,
+  orders: true,
+  drones: true,
+})
+
+/** 空域填充不透明度（百分比）；拖动结束才重建，避免每一步都重画所有面 */
+const zoneFillPct = ref(100)
+
+/** 按当前不透明度系数生成空域样式（保留各类型的基准透明度比例） */
+function zoneStyleFor(zone: AirspaceZone): L.PathOptions {
+  const base = ZONE_STYLE[zone.zoneType] ?? ZONE_STYLE.WARNING
+  return {
+    ...base,
+    fillOpacity: Number(base.fillOpacity ?? 0.1) * (zoneFillPct.value / 100),
+  }
+}
+
+/**
+ * 把图层开关落到 Leaflet 图层组上。
+ *
+ * <p>只做 add/remove，不销毁图层：关掉再打开时无需重建几何，
+ * 也不会丢失已绑定的 popup 与已绘制的尾迹。
+ */
+function syncLayerVisibility(): void {
+  if (!map) return
+  const zoneVisible = layerVisibility.airspace || layerVisibility.buildings || layerVisibility.terrains
+  const groups: Array<[L.LayerGroup | null, boolean]> = [
+    [zoneLayer, zoneVisible],
+    [stationLayer, layerVisibility.stations],
+    [routeLayer, layerVisibility.routes],
+    [orderLayer, layerVisibility.orders],
+    [droneLayer, layerVisibility.drones],
+    [trailLayer, layerVisibility.drones],
+    [coneLayer, layerVisibility.drones],
+  ]
+  for (const [group, visible] of groups) {
+    if (!group) continue
+    if (visible && !map.hasLayer(group)) group.addTo(map)
+    else if (!visible && map.hasLayer(group)) map.removeLayer(group)
+  }
+}
+
+watch(layerVisibility, () => {
+  rebuildZones()
+  syncLayerVisibility()
+  if (layerVisibility.drones) refreshCone()
+})
+
 /** 首次拿到机队位置时自动定位作业区；用户手动拖拽后不再抢视角 */
 let autoFocusDone = false
 let userDraggedMap = false
@@ -528,6 +585,8 @@ function initMap() {
   updateRoutes()
   syncDrones()
   syncBaseLayerVisibility()
+  // 图层组的初始显隐按开关状态落一次（默认全开，但用户切页返回时开关是保留的）
+  syncLayerVisibility()
   startAnimation()
 
   // 立刻试一次（数据可能已随首帧到达），否则每 500ms 重试，最多 10 秒
@@ -887,7 +946,15 @@ function rebuildZones() {
   if (!zoneLayer) return
   zoneLayer.clearLayers()
   props.zones.forEach((zone) => {
-    const style = ZONE_STYLE[zone.zoneType] ?? ZONE_STYLE.WARNING
+    // 分类开关：建筑 / 地形 / 其余空域各自独立，不必为了看楼群把禁飞区也叠上
+    const visible =
+      zone.zoneType === 'BUILDING'
+        ? layerVisibility.buildings
+        : zone.zoneType === 'TERRAIN'
+          ? layerVisibility.terrains
+          : layerVisibility.airspace
+    if (!visible) return
+    const style = zoneStyleFor(zone)
     const windowText =
       zone.activeFromSimSec != null || zone.activeToSimSec != null
         ? `仿真时间窗：${zone.activeFromSimSec ?? 0} ~ ${zone.activeToSimSec ?? '长期'} s<br/>`
@@ -1421,6 +1488,28 @@ const legendItems = computed(() =>
           </span>
         </template>
       </div>
+      <!-- 图层开关：空域/建筑/地形/站点/航路/订单/飞机全叠加时看不清重点，
+           这里统一控制显隐；空域填充另给一个透明度滑杆 -->
+      <div v-if="viewMode === '2D'" class="hud-layers">
+        <span class="hud-layers-label">图层</span>
+        <a-checkbox v-model:checked="layerVisibility.airspace">空域</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.buildings">建筑</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.terrains">地形</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.stations">站点</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.routes">航路</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.orders">订单</a-checkbox>
+        <a-checkbox v-model:checked="layerVisibility.drones">飞机</a-checkbox>
+        <span class="hud-layers-label hud-layers-opacity">空域填充</span>
+        <a-slider
+          v-model:value="zoneFillPct"
+          class="hud-opacity"
+          :min="10"
+          :max="100"
+          :step="10"
+          :tooltip="{ formatter: (value?: number) => `${value ?? 100}%` }"
+          @after-change="() => rebuildZones()"
+        />
+      </div>
       <div class="hud-badge">
         {{ viewMode === '3D' ? '立体视图 · 高度已放大 3×' : chinaMapReady ? '中国地图 · 省级边界' : '模拟地图 · 程序化生成' }}
       </div>
@@ -1616,6 +1705,40 @@ const legendItems = computed(() =>
 
 .hud-preset {
   margin-left: 2px;
+}
+
+/* 图层开关行：紧凑排布，避免把 HUD 撑得过高 */
+.hud-layers {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  margin: 2px 0 3px;
+  max-width: 430px;
+}
+
+.hud-layers :deep(.ant-checkbox-wrapper) {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.hud-layers-label {
+  font-size: 11px;
+  color: rgba(150, 199, 232, 0.6);
+}
+
+.hud-layers-opacity {
+  margin-left: 2px;
+}
+
+.hud-opacity {
+  width: 92px;
+  margin: 0 2px;
+}
+
+.hud-opacity :deep(.ant-slider) {
+  margin: 4px 2px;
 }
 
 /* 立体视图的方向平移按钮：四个小键排在一起，一眼看出"能往四周看" */

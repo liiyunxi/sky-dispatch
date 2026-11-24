@@ -182,6 +182,10 @@ management:
       show-details: always
 
 springdoc:
+  # 多个模块都有名为 Response 的 DTO（AirspaceDtos.Response / OrderDtos.Response / TaskDtos.Response），
+  # 默认按简单类名生成 schema 会互相覆盖，导致 OpenAPI 里只剩一个 Response。
+  # 用全限定名保证每个 DTO 都独立可见，前端契约检查才有意义。
+  use-fqn: true
   swagger-ui:
     path: /swagger-ui.html
     tags-sorter: alpha

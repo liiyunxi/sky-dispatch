@@ -1,11 +1,13 @@
 package com.skydispatch.engine;
 
+import com.skydispatch.common.GeoPoint;
 import com.skydispatch.config.SkyProperties;
 import com.skydispatch.domain.entity.DroneModel;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,5 +51,42 @@ class FlightTimeEstimatorTest {
 
         assertThat(headwind).isGreaterThan(noWind);
         assertThat(tailwind).isLessThan(noWind);
+    }
+
+    @Test
+    @DisplayName("无风时单段 estimateRoute 与单段 estimate 完全一致")
+    void routeMatchesSingleSegmentInCalmWind() {
+        SkyProperties props = TestProps.defaults();
+        FlightTimeEstimator estimator = new FlightTimeEstimator(
+                props, new WindField(props), new EnergyModel(props));
+
+        GeoPoint start = new GeoPoint(31.2304, 121.4737);
+        GeoPoint goal = new GeoPoint(31.2400, 121.4900);
+        double distance = start.distanceTo(goal);
+
+        int direct = estimator.estimate(distance, model, 80, start.bearingTo(goal)).seconds();
+        int route = estimator.estimateRoute(List.of(start, goal), model, 80).seconds();
+
+        assertThat(route).isEqualTo(direct);
+    }
+
+    @Test
+    @DisplayName("折返航路逐段取风：逆风段 + 顺风段，不再把全程当成单一逆风")
+    void routeUsesPerSegmentWind() {
+        SkyProperties windProps = TestProps.withWind(new SkyProperties.Wind(
+                true, 0.0, 5.0, 10.0, 0.0, 0.0, 41.0, 0.0, 0.55, 0.60, 2.20, true, 1.05));
+        FlightTimeEstimator estimator = new FlightTimeEstimator(
+                windProps, new WindField(windProps), new EnergyModel(windProps));
+
+        GeoPoint south = new GeoPoint(31.2000, 121.4000);
+        GeoPoint north = new GeoPoint(31.2135, 121.4000); // 向北约 1.5km
+        double outAndBackM = south.distanceTo(north) * 2;
+
+        int outAndBack = estimator.estimateRoute(List.of(south, north, south), model, 80).seconds();
+        // 单段口径用起终点方位（正北）取风：整条折返航路都被当成逆风
+        int singleBearingHeadwind = estimator.estimate(outAndBackM, model, 80, 0).seconds();
+
+        assertThat(outAndBack).isLessThan(singleBearingHeadwind);
+        assertThat(outAndBack).isGreaterThan(0);
     }
 }
