@@ -106,6 +106,7 @@ const {
   simTimeS,
   tickCount,
   runtimeState,
+  wind,
 } = telemetry
 
 /**
@@ -167,6 +168,30 @@ const channelStatus = computed(() => {
 })
 
 const runStatusText = computed(() => RUN_STATUS_TEXT[runStatus.value] ?? runStatus.value)
+
+/** 16 方位中文罗盘，用于把风的来向翻译成"西南风" */
+const COMPASS_16 = [
+  '北', '北东北', '东北', '东东北', '东', '东东南', '东南', '南东南',
+  '南', '南西南', '西南', '西西南', '西', '西西北', '西北', '北西北',
+]
+
+/**
+ * 风场读数：风速 + 风向来向。
+ *
+ * 只做展示，真正影响飞行的是后端的 WindField（地速/能耗/机头偏航）。
+ * 后端未返回风场（老版本或已关闭）时整块隐藏，不留空占位。
+ */
+const windBadge = computed(() => {
+  const w = wind.value
+  if (!w || !w.enabled) return null
+  const dir = ((Math.round(w.directionDeg / 22.5) % 16) + 16) % 16
+  const speed = Number(w.speedMps ?? 0)
+  return {
+    text: `${COMPASS_16[dir]}风 ${speed.toFixed(1)}m/s`,
+    tip: `风向 ${Number(w.directionDeg ?? 0).toFixed(0)}°（来向），逆风航段地速下降、能耗上升，侧风时机头会偏航`,
+    level: speed >= 8 ? 'red' : speed >= 5 ? 'gold' : 'cyan',
+  }
+})
 
 /** 有运行记录（RUNNING 或 PAUSED）时手动步进才有意义 */
 const canStep = computed(() => runtimeState.value?.runId != null)
@@ -373,6 +398,16 @@ onUnmounted(() => {
             <a-divider class="hud-divider" type="vertical" />
             <span class="hud-label">在线客户端</span>
             <a-tag class="hud-chip hud-chip--info">{{ kpi?.onlineClients ?? 0 }}</a-tag>
+
+            <!-- 风场读数：逆风会拖慢地速、抬高能耗，这里让"风"在看板上可见 -->
+            <template v-if="windBadge">
+              <a-divider class="hud-divider" type="vertical" />
+              <a-tooltip :title="windBadge.tip">
+                <a-tag class="hud-chip" :class="`hud-chip--${windBadge.level}`">
+                  {{ windBadge.text }}
+                </a-tag>
+              </a-tooltip>
+            </template>
           </div>
 
           <div class="header-right">

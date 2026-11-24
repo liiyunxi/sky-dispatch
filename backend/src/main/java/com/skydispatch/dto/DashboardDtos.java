@@ -91,6 +91,20 @@ public final class DashboardDtos {
     ) {
     }
 
+    /**
+     * 当前风场读数（看板顶部 HUD 展示用）。
+     *
+     * @param enabled    风场是否启用
+     * @param speedMps   瞬时风速（含阵风，米/秒）
+     * @param directionDeg 风的来向（度，正北 0、顺时针）
+     */
+    public record WindView(
+            boolean enabled,
+            BigDecimal speedMps,
+            BigDecimal directionDeg
+    ) {
+    }
+
     /** 连接建立时的全量快照。 */
     public record Snapshot(
             BigDecimal simTimeS,
@@ -99,12 +113,14 @@ public final class DashboardDtos {
             List<DroneFrame> drones,
             Kpi kpi,
             List<ConflictView> openConflicts,
-            List<OrderPin> orders
+            List<OrderPin> orders,
+            WindView wind
     ) {
     }
 
     /** 每个 tick 的增量推送（只含位置/电量等变化频繁的字段）。 */
-    public record TelemetryPayload(BigDecimal simTimeS, Long tickCount, List<DroneFrame> drones) {
+    public record TelemetryPayload(BigDecimal simTimeS, Long tickCount, List<DroneFrame> drones,
+                                   WindView wind) {
     }
 
     /** 冲突事件视图。 */

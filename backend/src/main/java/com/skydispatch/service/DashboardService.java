@@ -11,6 +11,7 @@ import com.skydispatch.domain.enums.OrderStatus;
 import com.skydispatch.domain.enums.RunStatus;
 import com.skydispatch.domain.enums.TaskStatus;
 import com.skydispatch.dto.DashboardDtos;
+import com.skydispatch.engine.WindField;
 import com.skydispatch.repository.ConflictEventRepository;
 import com.skydispatch.repository.DeliveryOrderRepository;
 import com.skydispatch.repository.DispatchTaskRepository;
@@ -57,6 +58,7 @@ public class DashboardService {
     private final SimulationRunRepository runRepository;
     private final TelemetryBroadcaster broadcaster;
     private final SkyProperties properties;
+    private final WindField windField;
 
     public DashboardService(DeliveryOrderRepository orderRepository,
                             DispatchTaskRepository taskRepository,
@@ -64,7 +66,8 @@ public class DashboardService {
                             ConflictEventRepository conflictRepository,
                             SimulationRunRepository runRepository,
                             TelemetryBroadcaster broadcaster,
-                            SkyProperties properties) {
+                            SkyProperties properties,
+                            WindField windField) {
         this.orderRepository = orderRepository;
         this.taskRepository = taskRepository;
         this.droneRepository = droneRepository;
@@ -72,6 +75,21 @@ public class DashboardService {
         this.runRepository = runRepository;
         this.broadcaster = broadcaster;
         this.properties = properties;
+        this.windField = windField;
+    }
+
+    /**
+     * 当前风场读数（按巡航高度取值，供 HUD 展示）。
+     *
+     * <p>只做展示用，不参与任何计算：真正影响飞行的是 {@link WindField#adjust}。
+     */
+    public DashboardDtos.WindView windView(BigDecimal simTimeS) {
+        double t = simTimeS == null ? 0.0 : simTimeS.doubleValue();
+        WindField.Vector vector = windField.vectorAt(t, properties.flight().defaultAltitudeM());
+        return new DashboardDtos.WindView(
+                windField.enabled(),
+                BigDecimal.valueOf(vector.speedMps()).setScale(2, RoundingMode.HALF_UP),
+                BigDecimal.valueOf(vector.fromDirectionDeg()).setScale(1, RoundingMode.HALF_UP));
     }
 
     /** 核心指标。 */
@@ -200,14 +218,16 @@ public class DashboardService {
     /** WebSocket 首帧用的全量快照。 */
     public DashboardDtos.Snapshot buildSnapshot() {
         SimulationRun run = runRepository.findFirstByStatusOrderByIdDesc(RunStatus.RUNNING).orElse(null);
+        BigDecimal simTime = run == null ? BigDecimal.ZERO : run.getSimTimeS();
         return new DashboardDtos.Snapshot(
-                run == null ? BigDecimal.ZERO : run.getSimTimeS(),
+                simTime,
                 run == null ? RunStatus.STOPPED.name() : run.getStatus().name(),
                 run == null ? 0L : run.getTickCount(),
                 droneFrames(),
                 kpi(),
                 topOpenConflicts(),
-                orderPins());
+                orderPins(),
+                windView(simTime));
     }
 
     /**

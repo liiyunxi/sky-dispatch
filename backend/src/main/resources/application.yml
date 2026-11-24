@@ -83,6 +83,32 @@ sky:
     descent-speed-mps: 3.0
     speed-ramp-m: 80.0
 
+  # 能耗模型：非线性功率曲线 P(v) = P_hover·(m/m0)^1.5 + B·v³
+  # 每公里能耗随速度、载重非线性变化；B 由额定巡航点反解，参数表标定值仍然有效
+  energy:
+    induced-exponent: 1.5       # 诱导功率质量指数（动量理论约 1.5；调大 = 重载更费电）
+    airframe-mass-ratio: 2.5    # 空机质量 / 最大载重（5kg 载重对应约 12.5kg 机身）
+    min-speed-factor: 0.30      # 每公里能耗计算时的最低速度系数，避免 v→0 发散
+    takeoff-landing-seconds: 60 # 一次起降的悬停时间
+
+  # 风场：让"逆风延误、迎风多耗电、侧风偏航"成为仿真的一部分
+  # 模型是确定性的（全部由 simTime 推导），同一段仿真重跑结果一致
+  wind:
+    enabled: ${SKY_WIND_ENABLED:true}
+    direction-deg: 225.0        # 来向（正北 0、顺时针）：225° = 西南风
+    base-speed-mps: 2.5         # 参考高度处的平均风速
+    reference-altitude-m: 10.0  # 参考高度（地面气象观测常取 10m）
+    shear-exponent: 0.14        # 高度剪切指数（开阔地形 0.14，城区可调到 0.25）
+    gust-ratio: 0.30            # 阵风幅度占比（±30%）
+    gust-period-s: 41.0         # 阵风主周期
+    direction-wander-deg: 6.0   # 风向摆动幅度
+    min-ground-speed-factor: 0.55  # 地速下限：极端逆风的兜底，避免仿真卡死
+    min-energy-factor: 0.60     # 每米能耗下限：顺风过强时也保留基础能耗
+    max-energy-factor: 2.20     # 每米能耗上限：逆风到几乎飞不动时封顶
+    # 派单阶段的风裕度：按每个航段的航向计算逆风能耗上浮（顺风段则少估，往返天然抵消）
+    planning-enabled: true
+    planning-safety-factor: 1.05  # 规划附加余量，覆盖阵风与预报误差；只影响"能不能派"，不影响实际消耗
+
   # 演示数据
   bootstrap:
     seed-demo-data: true

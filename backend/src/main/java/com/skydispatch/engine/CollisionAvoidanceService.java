@@ -81,6 +81,7 @@ public class CollisionAvoidanceService {
     private final RouteService routeService;
     private final EventService eventService;
     private final RerouteRegistry rerouteRegistry;
+    private final WindField windField;
 
     /** 冲突指纹 → 上次记录的仿真秒（窗口去重，避免同一冲突每拍刷屏）。 */
     private final Map<String, Double> recentFingerprints = new HashMap<>();
@@ -92,13 +93,15 @@ public class CollisionAvoidanceService {
                                      AirspaceService airspaceService,
                                      RouteService routeService,
                                      EventService eventService,
-                                     RerouteRegistry rerouteRegistry) {
+                                     RerouteRegistry rerouteRegistry,
+                                     WindField windField) {
         this.taskRepository = taskRepository;
         this.conflictRepository = conflictRepository;
         this.airspaceService = airspaceService;
         this.routeService = routeService;
         this.eventService = eventService;
         this.rerouteRegistry = rerouteRegistry;
+        this.windField = windField;
     }
 
     /**
@@ -128,7 +131,7 @@ public class CollisionAvoidanceService {
 
         List<Flight> flights = new ArrayList<>();
         for (DispatchTask task : flightsToCheck) {
-            Flight flight = buildFlight(task, drones, routes, waypointsByRoute, orders);
+            Flight flight = buildFlight(task, drones, routes, waypointsByRoute, orders, simTime);
             if (flight != null) {
                 flights.add(flight);
             }
@@ -229,10 +232,17 @@ public class CollisionAvoidanceService {
         double speedMps;
         double altitudeM;
         double payloadKg;
+        /**
+         * 风修正后的地速系数（逆风 &lt; 1）。
+         *
+         * <p>外推必须和仿真推进用同一个地速，否则"预测 40 秒后到某点"和实际到达时刻会漂移，
+         * 冲突告警就会变成误报或漏报。
+         */
+        double groundSpeedFactor = 1.0;
 
         /** 未来 futureSec 秒的位置；航程结束（落地/回家）后返回 null，表示不再占用空域。 */
         GeoPoint positionAt(double futureSec) {
-            double d = startDist + speedMps * futureSec;
+            double d = startDist + speedMps * groundSpeedFactor * futureSec;
             if (d < 0 || d > GeoUtils.polylineLengthMeters(futureLine) + 1.0) {
                 return null;
             }
@@ -249,7 +259,8 @@ public class CollisionAvoidanceService {
                                Map<Long, Drone> drones,
                                Map<Long, FlightRoute> routes,
                                Map<Long, List<FlightWaypoint>> waypointsByRoute,
-                               Map<Long, DeliveryOrder> orders) {
+                               Map<Long, DeliveryOrder> orders,
+                               double simTimeSec) {
         Drone drone = drones.get(task.getDroneId());
         if (drone == null || drone.getCurrentLat() == null || drone.getCurrentLon() == null
                 || task.getRouteId() == null) {
@@ -323,6 +334,13 @@ public class CollisionAvoidanceService {
             f.startDist = 0;
         }
         f.futureLine = future;
+        // 用"当前位置 → 前方 50m"的方位角取风修正，保证外推速度与仿真推进一致
+        double total = GeoUtils.polylineLengthMeters(future);
+        GeoPoint ahead = GeoUtils.pointAtDistance(future, Math.min(50.0, total));
+        double bearing = GeoUtils.bearingDegrees(current.lat(), current.lon(), ahead.lat(), ahead.lon());
+        f.groundSpeedFactor = windField
+                .adjust(speed, bearing, alt, simTimeSec)
+                .groundSpeedFactor();
         return f;
     }
 

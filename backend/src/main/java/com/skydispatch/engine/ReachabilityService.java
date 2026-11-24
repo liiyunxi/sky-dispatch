@@ -1,6 +1,7 @@
 package com.skydispatch.engine;
 
 import com.skydispatch.common.GeoPoint;
+import com.skydispatch.common.GeoUtils;
 import com.skydispatch.config.SkyProperties;
 import com.skydispatch.domain.entity.ChargingStation;
 import com.skydispatch.domain.entity.DroneModel;
@@ -62,10 +63,12 @@ public class ReachabilityService {
 
     private final EnergyModel energyModel;
     private final SkyProperties properties;
+    private final WindField windField;
 
-    public ReachabilityService(EnergyModel energyModel, SkyProperties properties) {
+    public ReachabilityService(EnergyModel energyModel, SkyProperties properties, WindField windField) {
         this.energyModel = energyModel;
         this.properties = properties;
+        this.windField = windField;
     }
 
     /** 计划中的一个补能点。 */
@@ -236,7 +239,7 @@ public class ReachabilityService {
 
                         // ① 直飞本阶段目标
                         GeoPoint targetPoint = pointOf(target, start, pickup, dropoff, home, stations);
-                        double toTarget = hopEnergy(model, from, targetPoint, payload);
+                        double toTarget = planningHopEnergy(model, from, targetPoint, payload);
                         if (toTarget <= available + EPS) {
                             double arrival = Math.max(0, available - toTarget);
                             if (arrival > best[k][phase][target] + EPS) {
@@ -265,7 +268,7 @@ public class ReachabilityService {
                                 continue;
                             }
                             GeoPoint stationPoint = pointOf(node, start, pickup, dropoff, home, stations);
-                            double need = hopEnergy(model, from, stationPoint, payload);
+                            double need = planningHopEnergy(model, from, stationPoint, payload);
                             if (need > available + EPS) {
                                 continue;
                             }
@@ -317,12 +320,38 @@ public class ReachabilityService {
         return phase == PHASE_DELIVERY ? payloadKg : 0;
     }
 
-    /** 一个航段的能耗：巡航 + 一次起降悬停（落地/起飞都要悬停）。 */
+    /** 一个航段的能耗：巡航 + 一次起降悬停（落地/起飞都要悬停，载重越大越费电）。 */
     private double hopEnergy(DroneModel model, GeoPoint from, GeoPoint to, double payloadKg) {
         double distance = from.distanceTo(to);
         BigDecimal energy = energyModel.cruiseEnergyWh(model, distance, payloadKg)
-                .add(energyModel.hoverEnergyWh(model));
+                .add(energyModel.hoverEnergyWh(model, payloadKg));
         return energy.doubleValue();
+    }
+
+    /**
+     * 规划用航段能耗：在 {@link #hopEnergy} 的基础上按<b>航段航向</b>计入风裕度。
+     *
+     * <p>为什么按航段而不是整单算一个系数：一单的"去程"和"返程"航向相反，
+     * 逆风与顺风会自然抵消；如果把整单都乘一个逆风系数，就会把返程的顺风收益也抹掉，
+     * 导致明明飞得回来的单被判成不可达。按段计价才是物理上正确的做法，
+     * 也让"长距离调机撞上逆风"这种真实难点被准确识别。
+     *
+     * <p>风裕度只用于<b>可行性判断</b>（能否飞完、要不要经停补能），
+     * 不改变展示的"预计能耗"与仿真的实际扣电。
+     */
+    private double planningHopEnergy(DroneModel model, GeoPoint from, GeoPoint to, double payloadKg) {
+        double distance = from.distanceTo(to);
+        if (distance <= 1e-6) {
+            return energyModel.hoverEnergyWh(model, payloadKg).doubleValue();
+        }
+        double cruiseSpeed = model.getCruiseSpeedMps() == null
+                ? 0 : model.getCruiseSpeedMps().doubleValue();
+        double bearing = GeoUtils.bearingDegrees(from.lat(), from.lon(), to.lat(), to.lon());
+        double factor = windField.planningEnergyFactor(
+                cruiseSpeed, bearing, properties.flight().defaultAltitudeM());
+        return energyModel.cruiseEnergyWh(model, distance, payloadKg, factor)
+                .add(energyModel.hoverEnergyWh(model, payloadKg))
+                .doubleValue();
     }
 
     /** 补能后可用能量：补到 {@code relayResumePct} 再扣掉安全冗余。 */
@@ -495,13 +524,44 @@ public class ReachabilityService {
             tightest = initialWh;
         }
         String summary = stops.isEmpty()
-                ? String.format("直飞可达：全程 %.1fkm，预计耗电 %.0fWh，可用 %.0fWh（最紧一段余量 %.0fWh）",
-                totalDistance / 1000, totalEnergy, initialWh, Math.max(0, tightest))
-                : String.format("需经停 %d 次补能（%s）：全程 %.1fkm，预计耗电 %.0fWh",
-                stops.size(), joinStationNames(stops), totalDistance / 1000, totalEnergy);
+                ? String.format("直飞可达：全程 %.1fkm，预计耗电 %.0fWh，可用 %.0fWh（最紧一段余量 %.0fWh）%s",
+                totalDistance / 1000, totalEnergy, initialWh, Math.max(0, tightest), windNote(model, start, pickup, dropoff, home))
+                : String.format("需经停 %d 次补能（%s）：全程 %.1fkm，预计耗电 %.0fWh%s",
+                stops.size(), joinStationNames(stops), totalDistance / 1000, totalEnergy,
+                windNote(model, start, pickup, dropoff, home));
 
         return new Plan(true, stops.isEmpty(), stops.size(), List.copyOf(stops),
                 totalDistance, totalEnergy, initialWh, Math.max(0, tightest), summary, null);
+    }
+
+    /**
+     * 结论里补一句"这单受了多大风影响"，让派单/决策明细能看出逆风因素。
+     *
+     * <p>取三个主航段（调机 / 载货去程 / 返航）里最不利的一段，
+     * 顺风段（系数 &lt; 1）不算"不利"，所以只报 &gt; 1 的情况。
+     */
+    private String windNote(DroneModel model, GeoPoint start, GeoPoint pickup,
+                            GeoPoint dropoff, GeoPoint home) {
+        double cruiseSpeed = model.getCruiseSpeedMps() == null
+                ? 0 : model.getCruiseSpeedMps().doubleValue();
+        if (cruiseSpeed <= 0 || !windField.enabled()) {
+            return "";
+        }
+        double altitude = properties.flight().defaultAltitudeM();
+        double deadhead = windField.planningEnergyFactor(cruiseSpeed,
+                bearing(start, pickup), altitude);
+        double outbound = windField.planningEnergyFactor(cruiseSpeed,
+                bearing(pickup, dropoff), altitude);
+        double inbound = home == null ? 1.0
+                : windField.planningEnergyFactor(cruiseSpeed, bearing(dropoff, home), altitude);
+        double worst = Math.max(deadhead, Math.max(outbound, inbound));
+        return worst > 1.02
+                ? String.format("（已计入逆风裕度 ×%.2f）", worst)
+                : "";
+    }
+
+    private static double bearing(GeoPoint from, GeoPoint to) {
+        return GeoUtils.bearingDegrees(from.lat(), from.lon(), to.lat(), to.lon());
     }
 
     private static String joinStationNames(List<ChargingStop> stops) {
@@ -531,19 +591,19 @@ public class ReachabilityService {
                             double payloadKg, double initialWh, double stationWh,
                             double[][][] best, boolean hasHome) {
         if (!reached(best, PHASE_DEADHEAD, PICKUP)) {
-            double need = hopEnergy(model, start, pickup, 0);
-            return String.format("空载调机段就飞不到取货点（需 %.0fWh，可用 %.0fWh）", need, initialWh);
+            double need = planningHopEnergy(model, start, pickup, 0);
+            return String.format("空载调机段就飞不到取货点（含风裕度需 %.0fWh，可用 %.0fWh）", need, initialWh);
         }
         if (!reached(best, PHASE_DELIVERY, DROPOFF)) {
             double availableAtPickup = maxAt(best, PHASE_DEADHEAD, PICKUP);
-            double need = hopEnergy(model, pickup, dropoff, payloadKg);
-            return String.format("取货后无法抵达送货点（载货需 %.0fWh，落地取货后最多可用 %.0fWh，"
+            double need = planningHopEnergy(model, pickup, dropoff, payloadKg);
+            return String.format("取货后无法抵达送货点（载货含风裕度需 %.0fWh，落地取货后最多可用 %.0fWh，"
                             + "且沿途没有可落脚的补能站）",
                     need, Math.max(availableAtPickup, stationWh));
         }
         // 能送达但回不来
-        double need = hopEnergy(model, dropoff, start, 0);
-        return String.format("可以送达，但无法返航（回程需 %.0fWh，卸货后余量不足，"
+        double need = planningHopEnergy(model, dropoff, start, 0);
+        return String.format("可以送达，但无法返航（回程含风裕度需 %.0fWh，卸货后余量不足，"
                         + "且沿途没有可落脚的补能站）",
                 need);
     }

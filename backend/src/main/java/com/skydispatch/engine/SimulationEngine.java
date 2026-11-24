@@ -132,7 +132,8 @@ public class SimulationEngine {
     /** 事务外的对外广播。 */
     private void publish(TickOutcome outcome) {
         broadcaster.broadcast(WsMessage.telemetry(new DashboardDtos.TelemetryPayload(
-                outcome.simTimeS(), outcome.stepIndex(), outcome.frames())));
+                outcome.simTimeS(), outcome.stepIndex(), outcome.frames(),
+                dashboardService.windView(outcome.simTimeS()))));
 
         List<ConflictEvent> conflicts = outcome.newConflicts();
         for (ConflictEvent conflict : conflicts) {

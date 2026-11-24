@@ -26,8 +26,9 @@ class ReachabilityServiceTest {
     private static final double LAT = 31.23;
     private static final double LON = 121.47;
 
-    private final EnergyModel energyModel = new EnergyModel();
-    private final ReachabilityService service = new ReachabilityService(energyModel, properties());
+    private final SkyProperties props = properties();
+    private final EnergyModel energyModel = new EnergyModel(props);
+    private final ReachabilityService service = new ReachabilityService(energyModel, props, new WindField(props));
     private final DroneModel model = model();
 
     @Test
@@ -77,6 +78,30 @@ class ReachabilityServiceTest {
         assertTrue(plan.failureReason().contains("送货点"), "应指出卡在载货段：" + plan.failureReason());
     }
 
+    @Test
+    @DisplayName("风裕度：开启后结论会标注逆风影响，且判定标准随之收紧")
+    void windMarginAnnotatedInSummary() {
+        // 北风 5m/s：向东飞是侧风（每米能耗 ×1.11），向南返航是顺风
+        SkyProperties withWind = properties(new SkyProperties.Wind(
+                true, 0, 5, 10, 0, 0, 41, 0, 0.55, 0.6, 2.2, true, 1.05));
+        ReachabilityService windService = new ReachabilityService(
+                energyModel, withWind, new WindField(withWind));
+
+        GeoPoint home = new GeoPoint(LAT, LON);
+        GeoPoint dropoff = east(home, 3);
+
+        ReachabilityService.Plan withMargin = windService.analyze(
+                model, home, home, dropoff, home, 2, usable(75), List.of());
+        ReachabilityService.Plan without = service.analyze(
+                model, home, home, dropoff, home, 2, usable(75), List.of());
+
+        assertTrue(withMargin.feasible());
+        assertTrue(withMargin.summary().contains("已计入逆风裕度"),
+                "开启风裕度后结论应标注：" + withMargin.summary());
+        assertFalse(without.summary().contains("已计入逆风裕度"),
+                "关闭风裕度时不应出现该标注：" + without.summary());
+    }
+
     // ------------------------------------------------------------------
 
     private static BigDecimal usable(double pct) {
@@ -118,6 +143,12 @@ class ReachabilityServiceTest {
     }
 
     private static SkyProperties properties() {
+        // 图搜索本身的行用例关闭风裕度，避免测试对风参数敏感
+        return properties(new SkyProperties.Wind(false, 225, 2.5, 10, 0.14, 0.3, 41, 6, 0.55, 0.6, 2.2,
+                false, 1.05));
+    }
+
+    private static SkyProperties properties(SkyProperties.Wind wind) {
         return new SkyProperties(
                 new SkyProperties.Algorithm("http://localhost:8000", 2000, 10000, true),
                 new SkyProperties.Simulation(true, 1000, 4.0, 5, 5, 2, 10000,
@@ -125,6 +156,8 @@ class ReachabilityServiceTest {
                 new SkyProperties.Dispatch("NEAREST_AVAILABLE", 10000, 25,
                         1.0, 0.5, 0.3, true, 90, 1.15),
                 new SkyProperties.Flight(80, 50, 30, 4, 3, 80),
+                new SkyProperties.Energy(1.5, 2.5, 0.30, 60.0),
+                wind,
                 new SkyProperties.Bootstrap(true),
                 new SkyProperties.Auth(false, "admin", "test", "test-secret", 60));
     }

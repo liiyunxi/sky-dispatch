@@ -203,7 +203,7 @@ public class BatteryRelayService {
             }
 
             BigDecimal needWh = energyModel.cruiseEnergyWh(model, remainingLeg + homeLeg, payload)
-                    .add(energyModel.hoverEnergyWh(model));
+                    .add(energyModel.hoverEnergyWh(model, payload));
             if (needWh.doubleValue() <= usableWh.doubleValue() * cfg.relaySafetyFactor()) {
                 continue;   // 这点电够用，不需要补能
             }
@@ -240,7 +240,7 @@ public class BatteryRelayService {
             }
             // 飞得到的判据：飞到站的巡航能耗 + 一次降落悬停，必须落在可用电量预算内
             double reachWh = energyModel.cruiseEnergyWh(model, distance, payload).doubleValue()
-                    + energyModel.hoverEnergyWh(model).doubleValue();
+                    + energyModel.hoverEnergyWh(model, payload).doubleValue();
             if (reachWh > budget) {
                 continue;
             }

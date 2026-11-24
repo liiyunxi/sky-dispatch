@@ -117,6 +117,22 @@ export interface OrderCreateRequest {
   remark?: string
 }
 
+/**
+ * 订单链路追踪：一次请求拿到「订单 + 任务 + 事件 + 派单决策」的同一时刻快照。
+ *
+ * ⚠️ 不要拆成多个请求：链路面板同时展示时间线、任务与决策，
+ * 分开请求会出现"时间线和任务卡不是同一时刻"的错位。
+ */
+export interface OrderTrace {
+  order: Order
+  /** 该订单的全部执行任务，最新一次在前（重派会有多条） */
+  tasks: DispatchTask[]
+  /** 事件时间线，按时间升序 */
+  events: EventLogItem[]
+  /** 历次派单的候选评估，按名次升序 */
+  decisions: DispatchDecision[]
+}
+
 // ---------------------------------------------------------------------------
 // 无人机
 // ---------------------------------------------------------------------------
@@ -404,6 +420,20 @@ export interface OrderPin {
   assignedDroneId?: number | null
 }
 
+/**
+ * 当前风场读数（HUD 展示用）。
+ *
+ * 后端模型是确定性的（由仿真时间推导），所以这里只传瞬时风速与来向，
+ * 前端不需要自己算风，避免两套物理模型对不上。
+ */
+export interface WindView {
+  enabled: boolean
+  /** 瞬时风速（含阵风，米/秒） */
+  speedMps: number
+  /** 风的来向（度，正北 0、顺时针） */
+  directionDeg: number
+}
+
 export interface Snapshot {
   simTimeS: number
   runStatus: string
@@ -413,6 +443,8 @@ export interface Snapshot {
   openConflicts: ConflictView[]
   /** 未完结订单 + 最近已送达订单的地理标记（老后端可能不返回，做缺省兜底） */
   orders?: OrderPin[]
+  /** 当前风场（老后端不返回，做缺省兜底） */
+  wind?: WindView
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +500,8 @@ export interface TelemetryPayload {
   simTimeS: number
   tickCount: number
   drones: DroneFrame[]
+  /** 当前风场（随遥测一起推送，老后端不返回时做缺省兜底） */
+  wind?: WindView
 }
 
 /** 领域事件（后端 event/SkyEvent 的 JSON 形态） */

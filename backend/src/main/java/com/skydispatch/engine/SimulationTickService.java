@@ -106,6 +106,7 @@ public class SimulationTickService {
     private final CollisionAvoidanceService collisionAvoidance;
     private final RerouteRegistry rerouteRegistry;
     private final BatteryRelayService batteryRelay;
+    private final WindField windField;
 
     public SimulationTickService(SimulationService simulationService,
                                  DispatchTaskRepository taskRepository,
@@ -123,7 +124,8 @@ public class SimulationTickService {
                                  FleetRechargeService rechargeService,
                                  CollisionAvoidanceService collisionAvoidance,
                                  RerouteRegistry rerouteRegistry,
-                                 BatteryRelayService batteryRelay) {
+                                 BatteryRelayService batteryRelay,
+                                 WindField windField) {
         this.simulationService = simulationService;
         this.taskRepository = taskRepository;
         this.droneRepository = droneRepository;
@@ -141,6 +143,7 @@ public class SimulationTickService {
         this.collisionAvoidance = collisionAvoidance;
         this.rerouteRegistry = rerouteRegistry;
         this.batteryRelay = batteryRelay;
+        this.windField = windField;
     }
 
     /**
@@ -334,7 +337,7 @@ public class SimulationTickService {
         if (task.getStatus() == TaskStatus.ASSIGNED) {
             task.setStatus(TaskStatus.TAKEOFF);
             task.setStartedAt(Instant.now());
-            consume(drone, model, task, energyModel.hoverEnergyWh(model));
+            consume(drone, model, task, energyModel.hoverEnergyWh(model, payloadKg));
             // 同步无人机运行态：派单后一直是 ASSIGNED，起飞这一刻起进入飞行中，
             // 否则地图与机队表全程显示"已分配"，看不出飞机其实已经在飞
             drone.setStatus(DroneStatus.IN_FLIGHT);
@@ -380,17 +383,24 @@ public class SimulationTickService {
                     ? Math.max(0, flown)
                     : Math.max(0, flown - routeDistance);
             double remain = routeDistance - returnFlown;
-            double legSpeed = profile.speedAt(returnFlown, remain);
+            // 风修正：地速随逆风下降，能耗按空速上升
+            WindField.Adjustment wind = windAt(returnPath, returnFlown, profile.cruiseAltitude(),
+                    cruiseSpeed, simTime);
+            // rampSpeed 是"本拍的空速"（含起降加减速），legSpeed 是扣掉风之后的地速：
+            // 能耗看空速，位置推进看地速
+            double rampSpeed = profile.speedAt(returnFlown, remain);
+            double legSpeed = rampSpeed * wind.groundSpeedFactor();
             double advance = Math.min(legSpeed * deltaSeconds, remain);
             returnFlown += advance;
             flown = reroutedReturn ? returnFlown : routeDistance + returnFlown;
 
             // 返航时已卸货，能耗按空载算
-            consume(drone, model, task, energyModel.cruiseEnergyWh(model, advance, 0));
+            consume(drone, model, task,
+                    energyModel.cruiseEnergyWh(model, advance, 0, rampSpeed, wind.energyFactor()));
 
             GeoPoint position = GeoUtils.pointAtDistance(returnPath, returnFlown);
             double altitude = profile.altitudeAt(returnFlown, routeDistance - returnFlown);
-            updatePosition(drone, position, legSpeed, altitude, returnPath);
+            updatePosition(drone, position, legSpeed, altitude, returnPath, wind.noseBearingDeg());
             task.setActualDistanceM(scale(flown));
             task.setCurrentWaypointSeq(seqAt(waypoints, returnFlown));
 
@@ -414,14 +424,18 @@ public class SimulationTickService {
         }
 
         double remain = routeDistance - flown;
-        double legSpeed = profile.speedAt(flown, remain);
+        // 风修正：逆风 → 地速下降、空速上升；顺风反之。侧风体现在机头偏转上
+        WindField.Adjustment wind = windAt(outbound, flown, profile.cruiseAltitude(), cruiseSpeed, simTime);
+        double rampSpeed = profile.speedAt(flown, remain);
+        double legSpeed = rampSpeed * wind.groundSpeedFactor();
         double advance = Math.min(legSpeed * deltaSeconds, remain);
         flown += advance;
-        consume(drone, model, task, energyModel.cruiseEnergyWh(model, advance, payloadKg));
+        consume(drone, model, task,
+                energyModel.cruiseEnergyWh(model, advance, payloadKg, rampSpeed, wind.energyFactor()));
 
         GeoPoint position = GeoUtils.pointAtDistance(outbound, flown);
         double altitude = profile.altitudeAt(flown, routeDistance - flown);
-        updatePosition(drone, position, legSpeed, altitude, outbound);
+        updatePosition(drone, position, legSpeed, altitude, outbound, wind.noseBearingDeg());
         task.setActualDistanceM(scale(flown));
         task.setCurrentWaypointSeq(seqAt(waypoints, flown));
         task.setProgressPct(scale(Math.min(100.0, flown / routeDistance * 100)));
@@ -436,7 +450,7 @@ public class SimulationTickService {
             // 抵达送货点：降落卸货
             task.setStatus(TaskStatus.DELIVERING);
             task.setProgressPct(scale(100));
-            consume(drone, model, task, energyModel.hoverEnergyWh(model));
+            consume(drone, model, task, energyModel.hoverEnergyWh(model, payloadKg));
             drone.setSpeedMps(BigDecimal.ZERO);
             drone.setAltitudeM(BigDecimal.ZERO);
             if (order != null && order.getStatus() == OrderStatus.IN_FLIGHT) {
@@ -454,18 +468,23 @@ public class SimulationTickService {
      *
      * <p>高度不再直接等于巡航高度，而是由飞行剖面按当前航程位置算出 ——
      * 这样看板上能看到飞机"爬上去、平飞、再降下来"，而不是一直贴在天花板上。
+     *
+     * <p>{@code noseBearingDeg} 是<b>机头朝向</b>（含侧风偏航角），不是航迹方向：
+     * 有侧风时飞机会"斜着飞"，地图上的朝向箭头略微偏离航线，这正是真实飞行姿态。
      */
     private void updatePosition(Drone drone, GeoPoint position, double speed, double altitudeM,
-                                List<GeoPoint> polyline) {
-        double heading;
-        if (drone.getCurrentLat() != null && drone.getCurrentLon() != null) {
-            heading = GeoUtils.bearingDegrees(drone.getCurrentLat(), drone.getCurrentLon(),
-                    position.lat(), position.lon());
-        } else {
-            // 首次移动没有历史位置，用"当前点 → 下一个航路点"算朝向
-            int idx = Math.min(1, polyline.size() - 1);
-            heading = GeoUtils.bearingDegrees(position.lat(), position.lon(),
-                    polyline.get(idx).lat(), polyline.get(idx).lon());
+                                List<GeoPoint> polyline, double noseBearingDeg) {
+        double heading = noseBearingDeg;
+        if (!Double.isFinite(heading)) {
+            // 兜底：拿不到风修正时沿用"上一位置 → 当前位置"的航迹方向
+            if (drone.getCurrentLat() != null && drone.getCurrentLon() != null) {
+                heading = GeoUtils.bearingDegrees(drone.getCurrentLat(), drone.getCurrentLon(),
+                        position.lat(), position.lon());
+            } else {
+                int idx = Math.min(1, polyline.size() - 1);
+                heading = GeoUtils.bearingDegrees(position.lat(), position.lon(),
+                        polyline.get(idx).lat(), polyline.get(idx).lon());
+            }
         }
         drone.setCurrentLat(position.lat());
         drone.setCurrentLon(position.lon());
@@ -474,6 +493,38 @@ public class SimulationTickService {
         drone.setAltitudeM(BigDecimal.valueOf(Math.max(0.0, altitudeM)).setScale(2, RoundingMode.HALF_UP));
         drone.setLastHeartbeatAt(Instant.now());
         droneRepository.save(drone);
+    }
+
+    // ------------------------------------------------------------------
+    // 风场
+    // ------------------------------------------------------------------
+
+    /**
+     * 计算当前航段的风修正。
+     *
+     * <p>航迹方向取"当前点 → 前方 50m"的方位角，而不是整段航线的方向：
+     * 绕飞航线是折线，取整段起点方向会让逆风分量算错。
+     */
+    private WindField.Adjustment windAt(List<GeoPoint> path, double flownM, double cruiseAltitudeM,
+                                        double cruiseSpeedMps, BigDecimal simTime) {
+        double bearing = trackBearing(path, flownM);
+        return windField.adjust(cruiseSpeedMps, bearing, cruiseAltitudeM,
+                simTime == null ? 0.0 : simTime.doubleValue());
+    }
+
+    /** 折线上"已飞 flownM 处"的前进方向（度）。 */
+    private double trackBearing(List<GeoPoint> path, double flownM) {
+        double total = GeoUtils.polylineLengthMeters(path);
+        double at = Math.max(0.0, Math.min(flownM, total));
+        GeoPoint a = GeoUtils.pointAtDistance(path, at);
+        GeoPoint b = GeoUtils.pointAtDistance(path, Math.min(at + 50.0, total));
+        if (a.distanceTo(b) < 0.5) {
+            // 已到终点：用末段方向兜底
+            GeoPoint end = GeoUtils.pointAtDistance(path, total);
+            GeoPoint prev = GeoUtils.pointAtDistance(path, Math.max(0.0, total - 50.0));
+            return GeoUtils.bearingDegrees(prev.lat(), prev.lon(), end.lat(), end.lon());
+        }
+        return GeoUtils.bearingDegrees(a.lat(), a.lon(), b.lat(), b.lon());
     }
 
     // ------------------------------------------------------------------

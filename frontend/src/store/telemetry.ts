@@ -13,6 +13,7 @@ import {
   type Kpi,
   type OrderPin,
   type RunStatus,
+  type WindView,
   type SimulationRun,
   type SimulationRuntimeState,
   type SkyEvent,
@@ -69,6 +70,8 @@ const lastMessageAt = ref<string | null>(null)
 const simTimeS = ref(0)
 const tickCount = ref(0)
 const runStatus = ref<RunStatus | 'STOPPED'>('STOPPED')
+/** 当前风场读数（后端确定性模型算出来的瞬时风速 / 来向） */
+const wind = ref<WindView | null>(null)
 
 /** 供页面显示"数据是否新鲜" */
 export const dataFreshness = computed(() => lastMessageAt.value)
@@ -120,6 +123,7 @@ function handleMessage(raw: string): void {
         kpi: Kpi
         openConflicts: ConflictView[]
         orders?: OrderPin[]
+        wind?: WindView
       }
       drones.value = payload.drones ?? []
       kpi.value = payload.kpi ?? null
@@ -128,13 +132,20 @@ function handleMessage(raw: string): void {
       simTimeS.value = payload.simTimeS ?? 0
       tickCount.value = payload.tickCount ?? 0
       runStatus.value = (payload.runStatus as RunStatus) ?? 'STOPPED'
+      wind.value = payload.wind ?? null
       break
     }
     case 'TELEMETRY': {
-      const payload = msg.payload as { simTimeS: number; tickCount: number; drones: DroneFrame[] }
+      const payload = msg.payload as {
+        simTimeS: number
+        tickCount: number
+        drones: DroneFrame[]
+        wind?: WindView
+      }
       drones.value = payload.drones ?? []
       simTimeS.value = payload.simTimeS ?? 0
       tickCount.value = payload.tickCount ?? 0
+      if (payload.wind) wind.value = payload.wind
       break
     }
     case 'KPI': {
@@ -258,6 +269,7 @@ export async function refreshSnapshot(): Promise<void> {
   simTimeS.value = snapshot.simTimeS ?? 0
   tickCount.value = snapshot.tickCount ?? 0
   runStatus.value = (snapshot.runStatus as RunStatus) ?? 'STOPPED'
+  wind.value = snapshot.wind ?? wind.value
   lastMessageAt.value = new Date().toISOString()
 }
 
@@ -439,6 +451,7 @@ export function useTelemetry() {
     simTimeS,
     tickCount,
     runStatus,
+    wind,
     // 动作
     connect,
     disconnect,
