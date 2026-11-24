@@ -101,6 +101,15 @@ public class DeliveryOrder {
     @Column(name = "expect_delivery_at")
     private Instant expectDeliveryAt;
 
+    /**
+     * 实际送达时间：订单转为 DELIVERED 时写入。
+     *
+     * <p>准时率必须用"送达时间"而不是"任务完成时间"（后者含返航），
+     * 否则承诺的是送货、统计的却是回机巢，口径不一致。
+     */
+    @Column(name = "delivered_at")
+    private Instant deliveredAt;
+
     /** 已分配的无人机 id（只存 id，不做对象关联）。 */
     @Column(name = "assigned_drone_id")
     private Long assignedDroneId;

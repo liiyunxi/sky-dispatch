@@ -38,7 +38,7 @@ public class AirspaceService {
 
     /** 参与路径规划的障碍物类型。 */
     private static final List<ZoneType> OBSTACLE_TYPES =
-            List.of(ZoneType.NO_FLY, ZoneType.RESTRICTED, ZoneType.BUILDING);
+            List.of(ZoneType.NO_FLY, ZoneType.RESTRICTED, ZoneType.BUILDING, ZoneType.TERRAIN);
 
     private final AirspaceZoneRepository zoneRepository;
 
@@ -79,6 +79,8 @@ public class AirspaceService {
                 .enabled(request.enabled() == null || request.enabled())
                 .effectiveFrom(request.effectiveFrom())
                 .effectiveTo(request.effectiveTo())
+                .activeFromSimSec(request.activeFromSimSec())
+                .activeToSimSec(request.activeToSimSec())
                 .remark(request.remark())
                 .build();
 
@@ -127,7 +129,8 @@ public class AirspaceService {
             ZoneType.RESTRICTED, new ZoneNaming("RFA", "限飞区", ConflictSeverity.HIGH),
             ZoneType.CORRIDOR, new ZoneNaming("CRD", "航路走廊", ConflictSeverity.LOW),
             ZoneType.WARNING, new ZoneNaming("WRN", "警示区", ConflictSeverity.MEDIUM),
-            ZoneType.BUILDING, new ZoneNaming("BLD", "建筑障碍", ConflictSeverity.HIGH));
+            ZoneType.BUILDING, new ZoneNaming("BLD", "建筑障碍", ConflictSeverity.HIGH),
+            ZoneType.TERRAIN, new ZoneNaming("TRN", "地形障碍", ConflictSeverity.HIGH));
 
     /**
      * 生成一个未被占用的区域编码（如 {@code NFZ-0003}）。
@@ -190,9 +193,23 @@ public class AirspaceService {
      */
     @Transactional(readOnly = true)
     public List<AlgorithmDtos.ObstacleSpec> activeObstacleSpecs() {
+        return activeObstacleSpecs(null);
+    }
+
+    /**
+     * 指定仿真时刻的障碍物列表：未到生效时间或已过期的临时管制区会被排除。
+     *
+     * @param simTimeS 当前仿真时刻（秒）；传 null 表示不做时间过滤（规划预览等场景）
+     */
+    @Transactional(readOnly = true)
+    public List<AlgorithmDtos.ObstacleSpec> activeObstacleSpecs(BigDecimal simTimeS) {
+        double now = simTimeS == null ? Double.NaN : simTimeS.doubleValue();
         List<AlgorithmDtos.ObstacleSpec> specs = new ArrayList<>();
         for (AirspaceZone zone : activeZones()) {
             if (!OBSTACLE_TYPES.contains(zone.getZoneType())) {
+                continue;
+            }
+            if (!Double.isNaN(now) && !activeAt(zone, now)) {
                 continue;
             }
             AlgorithmDtos.ObstacleSpec spec = toObstacleSpec(zone);
@@ -201,6 +218,16 @@ public class AirspaceService {
             }
         }
         return specs;
+    }
+
+    /** 空域在给定仿真时刻是否生效（处理临时管制的时间窗）。 */
+    public boolean activeAt(AirspaceZone zone, double simTimeS) {
+        Long from = zone.getActiveFromSimSec();
+        Long to = zone.getActiveToSimSec();
+        if (from != null && simTimeS < from) {
+            return false;
+        }
+        return to == null || simTimeS <= to;
     }
 
     /**

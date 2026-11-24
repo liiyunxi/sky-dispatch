@@ -2,6 +2,7 @@ package com.skydispatch.web;
 
 import com.skydispatch.common.ApiResponse;
 import com.skydispatch.dto.ChargingDtos;
+import com.skydispatch.engine.ChargingStationRegistry;
 import com.skydispatch.repository.ChargingStationRepository;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -24,16 +25,22 @@ import java.util.List;
 public class StationController {
 
     private final ChargingStationRepository stationRepository;
+    private final ChargingStationRegistry chargingRegistry;
 
-    public StationController(ChargingStationRepository stationRepository) {
+    public StationController(ChargingStationRepository stationRepository,
+                             ChargingStationRegistry chargingRegistry) {
         this.stationRepository = stationRepository;
+        this.chargingRegistry = chargingRegistry;
     }
 
     @GetMapping
-    @Operation(summary = "查询全部启用的充电站")
+    @Operation(summary = "查询全部启用的充电站（含实时桩位占用与排队）")
     public ApiResponse<List<ChargingDtos.Station>> list() {
         return ApiResponse.ok(stationRepository.findAllByEnabledTrue().stream()
-                .map(ChargingDtos.Station::from)
+                .map(station -> ChargingDtos.Station.from(
+                        station,
+                        chargingRegistry.occupancy(station.getId()),
+                        chargingRegistry.queueLength(station.getId())))
                 .toList());
     }
 }

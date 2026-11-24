@@ -12,6 +12,10 @@ import type {
   Drone,
   DroneCreateRequest,
   DroneStatus,
+  FaultRequest,
+  FaultResponse,
+  InfrastructureOverview,
+  InfrastructureVertiport,
   Kpi,
   EventLogItem,
   Order,
@@ -24,9 +28,11 @@ import type {
   SimulationRun,
   SimulationRuntimeState,
   Snapshot,
+  StrategicSlotSnapshot,
   TaskStatus,
   TaskStatusStats,
   TickResult,
+  VertiportUpdateRequest,
   Waypoint,
   ZoneCreateRequest,
 } from './types'
@@ -106,6 +112,19 @@ export const stationApi = {
 }
 
 // ---------------------------------------------------------------------------
+// 基础设施（充电站排队 / 机巢容量 / 战略时隙）
+// ---------------------------------------------------------------------------
+export const infrastructureApi = {
+  /** 一次拿到充电站运行态、机巢配置与战略时隙快照 */
+  overview: () => http.get<InfrastructureOverview>('/infrastructure', undefined, true),
+  /** 只读战略时隙快照 */
+  slots: () => http.get<StrategicSlotSnapshot>('/infrastructure/slots', undefined, true),
+  /** 修改某机巢的坪位数 / 周转时间 */
+  updateVertiport: (id: number, body: VertiportUpdateRequest) =>
+    http.patch<InfrastructureVertiport>(`/infrastructure/vertiports/${id}`, body),
+}
+
+// ---------------------------------------------------------------------------
 // 调度
 // ---------------------------------------------------------------------------
 export const dispatchApi = {
@@ -157,6 +176,8 @@ export const simulationApi = {
   pause: () => http.post<SimulationRuntimeState>('/simulation/pause'),
   /** 从暂停处继续（不重置计时；想从 0 开始请用 start 新建一轮） */
   resume: () => http.post<SimulationRuntimeState>('/simulation/resume'),
+  /** 人工注入飞行故障（下一拍生效，演示时可精确复现） */
+  injectFault: (body: FaultRequest) => http.post<FaultResponse>('/simulation/fault', body),
 }
 
 // ---------------------------------------------------------------------------

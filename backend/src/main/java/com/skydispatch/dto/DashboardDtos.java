@@ -46,6 +46,16 @@ public final class DashboardDtos {
             BigDecimal batteryPct,
             BigDecimal progressPct,
             Integer waypointSeq,
+            /** 这帧观测对应的采样时刻（延迟/陈旧时早于当前时刻）。 */
+            Instant observedAt,
+            /** 观测数据是否延迟。 */
+            boolean delayed,
+            /** 是否丢包后沿用的陈旧帧。 */
+            boolean stale,
+            /** 通信中断（失联）。 */
+            boolean commLost,
+            /** GPS 漂移。 */
+            boolean gpsDrift,
             Instant ts
     ) {
     }

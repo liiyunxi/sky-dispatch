@@ -55,6 +55,9 @@ public final class AirspaceDtos {
             Boolean enabled,
             Instant effectiveFrom,
             Instant effectiveTo,
+            /** 仿真时间窗（秒）：临时管制区到点自动生效/解除。 */
+            Long activeFromSimSec,
+            Long activeToSimSec,
             @Size(max = 255) String remark
     ) {
     }
@@ -75,6 +78,8 @@ public final class AirspaceDtos {
             Boolean enabled,
             Instant effectiveFrom,
             Instant effectiveTo,
+            Long activeFromSimSec,
+            Long activeToSimSec,
             String remark
     ) {
         /**
@@ -90,7 +95,8 @@ public final class AirspaceDtos {
                     : polygon.stream().map(p -> new CommonDtos.GeoDto(p.lat(), p.lon(), null)).toList();
             return new Response(z.getId(), z.getCode(), z.getName(), z.getZoneType(), z.getShapeType(),
                     center, z.getRadiusM(), points, z.getMinAltitudeM(), z.getMaxAltitudeM(),
-                    z.getSeverity(), z.getEnabled(), z.getEffectiveFrom(), z.getEffectiveTo(), z.getRemark());
+                    z.getSeverity(), z.getEnabled(), z.getEffectiveFrom(), z.getEffectiveTo(),
+                    z.getActiveFromSimSec(), z.getActiveToSimSec(), z.getRemark());
         }
     }
 }

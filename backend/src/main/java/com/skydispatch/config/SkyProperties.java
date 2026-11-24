@@ -3,6 +3,8 @@ package com.skydispatch.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
+import java.util.List;
+
 /**
  * 业务配置集中入口，对应 application.yml 里的 {@code sky.*}。
  *
@@ -21,7 +23,13 @@ public record SkyProperties(
         @DefaultValue Energy energy,
         @DefaultValue Wind wind,
         @DefaultValue Bootstrap bootstrap,
-        @DefaultValue Auth auth
+        @DefaultValue Auth auth,
+        @DefaultValue Dynamics dynamics,
+        @DefaultValue Charging charging,
+        @DefaultValue Vertiport vertiport,
+        @DefaultValue Strategic strategic,
+        @DefaultValue Fault fault,
+        @DefaultValue Telemetry telemetry
 ) {
 
     /** 调用 Python 算法服务的参数。 */
@@ -113,7 +121,15 @@ public record SkyProperties(
             /** 下降速率（米/秒），比爬升略慢，接近真实多旋翼的下降策略。 */
             @DefaultValue("3.0") double descentSpeedMps,
             /** 起降加减速的水平过渡距离（米）：从最小速度平滑加到巡航速度（反之亦然）。 */
-            @DefaultValue("80.0") double speedRampM
+            @DefaultValue("80.0") double speedRampM,
+            /**
+             * 可用巡航高度层（米）。
+             *
+             * <p>不同无人机按编号轮转到不同层，避免全机队挤在同一个高度层：
+             * 同层才需要水平避让，跨层只要高度差大于安全间隔即可解耦。
+             * 数值必须落在所有机型的最大升限以内，且相邻层间隔要大于冲突检测的垂直间隔。
+             */
+            @DefaultValue("62,80,98,116") List<Double> altitudeLayersM
     ) {
     }
 
@@ -229,6 +245,117 @@ public record SkyProperties(
             @DefaultValue("sky-dispatch") String password,
             @DefaultValue("dev-only-change-me-sky-dispatch-secret-32bytes") String secret,
             @DefaultValue("720") long tokenTtlMinutes
+    ) {
+    }
+
+    /**
+     * 飞行动力学参数（位置由积分产生，而不是沿航路插值）。
+     *
+     * <p>无人机每拍都当作一个带惯性的质点：
+     * <pre>
+     *   速度指令（航路跟随 + 末端制动 + 空速上限）
+     *        ↓ 受最大加速度约束
+     *   地速矢量 → 位置积分
+     * </pre>
+     * 因此加速、转弯、逆风漂移、末端减速都是"飞出来"的，而不是按距离查表。
+     */
+    public record Dynamics(
+            /** 水平最大加速度（m/s²）：决定加速、转弯与刹车的灵敏度。 */
+            @DefaultValue("2.5") double maxAccelMps2,
+            /** 速度误差到加速度的增益（1/s）：越大跟得越紧，但过大会振荡。 */
+            @DefaultValue("0.9") double speedGainPerSec,
+            /** 航路跟随的前视距离（米）：越大越平顺、越小越贴线。 */
+            @DefaultValue("120.0") double lookaheadM,
+            /** 积分子步长（秒）：一拍内部分成若干子步，保证 8 倍速下仍然稳定。 */
+            @DefaultValue("0.5") double integrationStepS,
+            /** 到达判定半径（米）：航路末端这个范围内且速度够低即视为到达。 */
+            @DefaultValue("2.0") double arrivalRadiusM,
+            /** 到达判定速度（米/秒）：低于它才允许落点，避免高速掠过终点。 */
+            @DefaultValue("1.5") double arrivalSpeedMps
+    ) {
+    }
+
+    /**
+     * 充电模型参数。
+     *
+     * <p>真实锂电池不是匀速充满：低 SOC 恒流快充，高 SOC 转入恒压，功率逐渐衰减。
+     * 这里用"起始衰减 SOC + 末端功率系数"两点线性近似，既保留曲线形态又便于配置。
+     */
+    public record Charging(
+            /** 进入恒压衰减段的 SOC 百分比（默认 80%）。 */
+            @DefaultValue("80.0") double taperStartPct,
+            /** SOC=100% 时的功率系数（相对恒流段，默认 0.35）。 */
+            @DefaultValue("0.35") double taperEndFactor
+    ) {
+    }
+
+    /** 机巢/起降坪资源与地面周转。 */
+    public record Vertiport(
+            /** 每个起降点的停机位数量。 */
+            @DefaultValue("4") int slotsPerSite,
+            /** 降落后地面周转时间（仿真秒）：检查、装卸、换电，期间不能再次起飞。 */
+            @DefaultValue("45.0") double turnaroundSeconds,
+            /** 一次起降占用的跑道/起降坪时间（仿真秒）。 */
+            @DefaultValue("15.0") double operationSeconds
+    ) {
+    }
+
+    /**
+     * 战略层去冲突（起飞时隙）。
+     *
+     * <p>战术层是"飞起来发现要撞再改航"；战略层在起飞前就按"走廊扇区 + 高度层"
+     * 预约时隙，把冲突消灭在地面，避免大量飞机同时涌进同一条走廊。
+     */
+    public record Strategic(
+            @DefaultValue("true") boolean enabled,
+            /** 时隙长度（仿真秒）。 */
+            @DefaultValue("15.0") double slotSeconds,
+            /** 每个"扇区 + 高度层"每时隙允许的起飞架次。 */
+            @DefaultValue("2") int departuresPerSlot
+    ) {
+    }
+
+    /**
+     * 故障注入（默认关闭；dev 演示环境打开小概率）。
+     *
+     * <p>没有故障的仿真是"完美世界"：所有任务都会成功、电池永远按模型下降、
+     * 遥测永远连续。真实运营必须面对电池异常、动力失效、通信中断与定位漂移。
+     */
+    public record Fault(
+            @DefaultValue("false") boolean enabled,
+            /** 每架无人机每分钟发生"电池异常压降"的概率。 */
+            @DefaultValue("0.004") double batteryDropRatePerDroneMin,
+            /** 每架无人机每分钟发生"动力失效"的概率（致命）。 */
+            @DefaultValue("0.0002") double powerLossRatePerDroneMin,
+            /** 每架无人机每分钟发生"通信中断"的概率。 */
+            @DefaultValue("0.002") double commLossRatePerDroneMin,
+            /** 每架无人机每分钟发生"GPS 漂移"的概率。 */
+            @DefaultValue("0.002") double gpsDriftRatePerDroneMin,
+            /** 通信中断持续时间（仿真秒）。 */
+            @DefaultValue("20.0") double commLossSeconds,
+            /** GPS 漂移的位置偏差（米）。 */
+            @DefaultValue("15.0") double gpsDriftMeters
+    ) {
+    }
+
+    /**
+     * 遥测观测误差（真值与观测分离）。
+     *
+     * <p>仿真内部用真值做物理与冲突判断；对外发布的遥测加入噪声、延迟与丢包，
+     * 这样看板与报表才是"传感器看到的"，而不是"上帝视角"。
+     */
+    public record Telemetry(
+            @DefaultValue("true") boolean noiseEnabled,
+            /** 水平位置噪声标准差（米）。 */
+            @DefaultValue("3.0") double positionNoiseM,
+            /** 高度噪声标准差（米）。 */
+            @DefaultValue("0.8") double altitudeNoiseM,
+            /** 每拍丢包概率（0~1）。 */
+            @DefaultValue("0.015") double dropRate,
+            /** 观测延迟拍数（1 表示用上一拍的值）。 */
+            @DefaultValue("1") int delayTicks,
+            /** 电量观测噪声（百分点）。 */
+            @DefaultValue("0.5") double batteryNoisePct
     ) {
     }
 }

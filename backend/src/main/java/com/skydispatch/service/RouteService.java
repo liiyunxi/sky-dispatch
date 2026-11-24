@@ -12,10 +12,13 @@ import com.skydispatch.domain.entity.FlightRoute;
 import com.skydispatch.domain.entity.FlightWaypoint;
 import com.skydispatch.domain.enums.RouteStatus;
 import com.skydispatch.dto.algorithm.AlgorithmDtos;
+import com.skydispatch.engine.AltitudeLayers;
 import com.skydispatch.engine.EnergyModel;
+import com.skydispatch.engine.FlightTimeEstimator;
 import com.skydispatch.integration.AlgorithmServiceClient;
 import com.skydispatch.repository.FlightRouteRepository;
 import com.skydispatch.repository.FlightWaypointRepository;
+import com.skydispatch.repository.SimulationRunRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -58,23 +61,32 @@ public class RouteService {
     private final AirspaceService airspaceService;
     private final AlgorithmServiceClient algorithmClient;
     private final EnergyModel energyModel;
+    private final AltitudeLayers altitudeLayers;
+    private final FlightTimeEstimator timeEstimator;
     private final SkyProperties properties;
     private final ObjectMapper objectMapper;
+    private final SimulationRunRepository runRepository;
 
     public RouteService(FlightRouteRepository routeRepository,
                         FlightWaypointRepository waypointRepository,
                         AirspaceService airspaceService,
                         AlgorithmServiceClient algorithmClient,
                         EnergyModel energyModel,
+                        AltitudeLayers altitudeLayers,
+                        FlightTimeEstimator timeEstimator,
                         SkyProperties properties,
-                        ObjectMapper objectMapper) {
+                        ObjectMapper objectMapper,
+                        SimulationRunRepository runRepository) {
         this.routeRepository = routeRepository;
         this.waypointRepository = waypointRepository;
         this.airspaceService = airspaceService;
         this.algorithmClient = algorithmClient;
         this.energyModel = energyModel;
+        this.altitudeLayers = altitudeLayers;
+        this.timeEstimator = timeEstimator;
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.runRepository = runRepository;
     }
 
     /**
@@ -87,7 +99,8 @@ public class RouteService {
     public PlannedRoute planRouteData(DeliveryOrder order, Drone drone, DroneModel model) {
         GeoPoint start = new GeoPoint(order.getPickupLat(), order.getPickupLon());
         GeoPoint goal = new GeoPoint(order.getDropoffLat(), order.getDropoffLon());
-        double altitude = properties.flight().defaultAltitudeM();
+        // 高度层按无人机分配：同机队不再全部挤在 default-altitude-m 这一层
+        double altitude = altitudeLayers.forDrone(drone);
         double cruiseSpeed = model.getCruiseSpeedMps().doubleValue();
 
         List<AlgorithmDtos.Waypoint> waypoints;
@@ -120,8 +133,18 @@ public class RouteService {
             rawResponse = "{\"fallback\":\"straight_line\"}";
         }
 
+        // 算法服务可能回填自己的高度；统一覆盖成本机的高度层，
+        // 保证"规划航路高度 = 仿真巡航高度 = 冲突检测使用的高度"三者一致
+        waypoints = waypoints.stream()
+                .map(w -> new AlgorithmDtos.Waypoint(
+                        w.seq(), w.lat(), w.lon(), altitude, w.cumulativeDistanceM()))
+                .toList();
+
         double distanceM = waypoints.get(waypoints.size() - 1).cumulativeDistanceM();
-        int durationS = energyModel.estimateDurationSeconds(distanceM, cruiseSpeed);
+        // 统一 ETA 口径：爬升 + 下降 + 风修正后的水平巡航 + 起降开销
+        double bearing = com.skydispatch.common.GeoUtils.bearingDegrees(
+                start.lat(), start.lon(), goal.lat(), goal.lon());
+        int durationS = timeEstimator.estimate(distanceM, model, altitude, bearing).seconds();
         /*
          * 计划能耗按完整任务估算：空载调机 + 去程载货 + 回程空载 + 两次起降。
          * 调机段距离要与派单时的续航校验保持同一口径，
@@ -157,7 +180,8 @@ public class RouteService {
                 .build();
         FlightRoute saved = routeRepository.save(route);
 
-        double cruiseSpeed = planned.cruiseSpeedMps();
+        int totalEta = planned.durationS();
+        double totalDistance = Math.max(1e-6, planned.distanceM());
         List<FlightWaypoint> entities = new ArrayList<>(planned.waypoints().size());
         for (AlgorithmDtos.Waypoint wp : planned.waypoints()) {
             entities.add(FlightWaypoint.builder()
@@ -167,8 +191,8 @@ public class RouteService {
                     .lon(wp.lon())
                     .altitudeM(BigDecimal.valueOf(wp.altitudeM()).setScale(2, RoundingMode.HALF_UP))
                     .cumulativeDistanceM(BigDecimal.valueOf(wp.cumulativeDistanceM()).setScale(2, RoundingMode.HALF_UP))
-                    // ETA 由累计距离 / 巡航速度推出，纯几何，不再消耗算法服务
-                    .etaSeconds(cruiseSpeed <= 0 ? 0 : (int) Math.ceil(wp.cumulativeDistanceM() / cruiseSpeed))
+                    // 航路点 ETA 按累计距离占比分摊总 ETA，口径与任务预计耗时一致
+                    .etaSeconds((int) Math.round(totalEta * wp.cumulativeDistanceM() / totalDistance))
                     .build());
         }
         waypointRepository.saveAll(entities);
@@ -177,6 +201,20 @@ public class RouteService {
                 orderId, droneId, planned.algorithm(), entities.size(),
                 String.format("%.0f", planned.distanceM()), planned.durationS(), planned.energyWh());
         return saved;
+    }
+
+    private List<AlgorithmDtos.Waypoint> fallbackWaypoints(GeoPoint start, GeoPoint goal) {
+        return List.of(
+                new AlgorithmDtos.Waypoint(0, start.lat(), start.lon(), properties.flight().defaultAltitudeM(), 0.0),
+                new AlgorithmDtos.Waypoint(1, goal.lat(), goal.lon(), properties.flight().defaultAltitudeM(),
+                        start.distanceTo(goal)));
+    }
+
+    /** 当前仿真时刻（秒）；没有运行中的仿真时按 0 处理。 */
+    private java.math.BigDecimal currentSimTime() {
+        return runRepository.findFirstByStatusOrderByIdDesc(com.skydispatch.domain.enums.RunStatus.RUNNING)
+                .map(com.skydispatch.domain.entity.SimulationRun::getSimTimeS)
+                .orElse(java.math.BigDecimal.ZERO);
     }
 
     /**
@@ -213,7 +251,8 @@ public class RouteService {
     /** 组装算法服务请求。障碍物来自空域表，高度/栅格/安全边距来自配置。 */
     private AlgorithmDtos.PlanPathRequest buildRequest(DeliveryOrder order, GeoPoint start, GeoPoint goal,
                                                       double altitude, double cruiseSpeed) {
-        List<AlgorithmDtos.ObstacleSpec> obstacles = airspaceService.activeObstacleSpecs();
+        // 按当前仿真时刻取障碍物：临时管制区只在时间窗内参与规划
+        List<AlgorithmDtos.ObstacleSpec> obstacles = airspaceService.activeObstacleSpecs(currentSimTime());
         return new AlgorithmDtos.PlanPathRequest(
                 UUID.randomUUID().toString(),
                 new AlgorithmDtos.LatLon(start.lat(), start.lon()),

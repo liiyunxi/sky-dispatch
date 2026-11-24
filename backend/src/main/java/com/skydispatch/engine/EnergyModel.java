@@ -120,6 +120,20 @@ public class EnergyModel {
     }
 
     /**
+     * 瞬时功率（W）：给"按时间积分"的动力学仿真用。
+     *
+     * <p>与 {@link #powerAtSpeed} 的区别是<b>不做速度地板</b>：
+     * 悬停（空速 0）时功率就是诱导功率，而不是被抬到 30% 巡航速度对应的值。
+     * 这样积分出来的悬停、爬升、逆风能耗才是物理的。
+     *
+     * @param airspeedMps 空速（相对空气的速度，米/秒）
+     */
+    public double instantPowerW(DroneModel model, double airspeedMps, double payloadKg) {
+        double v = Math.max(0.0, airspeedMps);
+        return inducedPowerW(model, payloadKg) + parasiteCoefficient(model) * v * v * v;
+    }
+
+    /**
      * 某空速下的每公里能耗（Wh/km）。
      *
      * <p>这就是"能耗随速度非线性变化"的直接体现：

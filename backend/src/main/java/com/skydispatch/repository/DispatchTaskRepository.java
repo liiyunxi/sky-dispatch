@@ -96,12 +96,22 @@ public interface DispatchTaskRepository extends JpaRepository<DispatchTask, Long
             where t.status = :status
               and exists (select 1 from DeliveryOrder o
                           where o.id = t.orderId
-                            and (o.expectDeliveryAt is null or t.finishedAt <= o.expectDeliveryAt))
+                            and (o.expectDeliveryAt is null
+                                 or coalesce(o.deliveredAt, t.finishedAt) <= o.expectDeliveryAt))
             """)
     long countOnTimeByStatus(@Param("status") TaskStatus status);
 
     /** 统计某机在指定状态集合下的任务数，用于"负载均衡"策略比较各机忙碌程度。 */
     long countByDroneIdAndStatusIn(Long droneId, Collection<TaskStatus> statuses);
+
+    /**
+     * 一次查出全部无人机在途任务数（droneId, count）。
+     *
+     * <p>派单评估会遍历整个机队，如果每架飞机都查一次就会出现 N+1；
+     * 批量派单一轮评估多个订单时会被放大到数百条 SQL。
+     */
+    @Query("select t.droneId, count(t) from DispatchTask t where t.status in :statuses group by t.droneId")
+    List<Object[]> countActiveGroupedByDrone(@Param("statuses") Collection<TaskStatus> statuses);
 
     /** 查某架无人机的任务（不限状态），用于"这架飞机都干过什么"。 */
     Page<DispatchTask> findByDroneId(Long droneId, Pageable pageable);

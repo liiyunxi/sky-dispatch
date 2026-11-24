@@ -26,6 +26,10 @@ spring:
 sky:
   bootstrap:
     seed-demo-data: true        # 自动灌入型号/无人机/空域/订单演示数据
+  fault:
+    # dev 打开小概率故障注入，演示"不完美世界"；致命故障率压到极低，避免打断演示
+    enabled: true
+    power-loss-rate-per-drone-min: 0.00005
   algorithm:
     # dev 默认【启用】Python A* 算法服务：真实规划绕开禁飞区与建筑障碍，
     # 而不是两点直线（高楼、机场净空都要求航路必须绕行）。

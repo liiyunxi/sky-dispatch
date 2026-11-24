@@ -2,6 +2,7 @@ package com.skydispatch.dto;
 
 import com.skydispatch.domain.entity.SimulationRun;
 import com.skydispatch.domain.enums.RunStatus;
+import jakarta.validation.constraints.NotNull;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -63,6 +64,38 @@ public final class SimulationDtos {
             String runStatus,
             BigDecimal simTimeS,
             Long tickCount
+    ) {
+    }
+
+    /** 可人工注入的故障类型（与 FaultInjectionService.Type 一一对应，不含 NONE）。 */
+    public enum ManualFaultType {
+        BATTERY_DROP,
+        POWER_LOSS,
+        COMM_LOSS,
+        GPS_DRIFT
+    }
+
+    /**
+     * 人工故障注入请求。
+     *
+     * @param droneId        目标无人机
+     * @param type           故障类型
+     * @param batteryDropPct 仅 BATTERY_DROP 使用；缺省 15%，夹在 1~50
+     */
+    public record FaultRequest(
+            @NotNull(message = "无人机不能为空") Long droneId,
+            @NotNull(message = "故障类型不能为空") ManualFaultType type,
+            Double batteryDropPct
+    ) {
+    }
+
+    /** 人工故障注入结果：已排队，下一拍生效。 */
+    public record FaultResponse(
+            Long droneId,
+            String droneCode,
+            String type,
+            double batteryDropPct,
+            String message
     ) {
     }
 }

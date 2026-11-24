@@ -48,6 +48,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/AirspaceView.vue'),
     meta: { title: '空域管理' },
   },
+  {
+    path: '/infrastructure',
+    name: 'infrastructure',
+    component: () => import('@/views/InfrastructureView.vue'),
+    meta: { title: '基础设施' },
+  },
   // 兜底：未知路径回看板（比显示 404 页面对运营更友好）
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]

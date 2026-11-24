@@ -42,6 +42,8 @@ public final class TaskDtos {
             Instant startedAt,
             Instant finishedAt,
             Integer durationS,
+            BigDecimal holdUntilS,
+            String holdReason,
             String failReason
     ) {
         public static Response from(DispatchTask t, String orderNo, String droneCode) {
@@ -51,7 +53,8 @@ public final class TaskDtos {
                     t.getPlannedDistanceM(), t.getActualDistanceM(),
                     t.getPlannedEnergyWh(), t.getConsumedEnergyWh(),
                     t.getBatteryStartPct(), t.getBatteryEndPct(),
-                    t.getAssignedAt(), t.getStartedAt(), t.getFinishedAt(), t.getDurationS(), t.getFailReason());
+                    t.getAssignedAt(), t.getStartedAt(), t.getFinishedAt(), t.getDurationS(),
+                    t.getHoldUntilS(), t.getHoldReason(), t.getFailReason());
         }
     }
 

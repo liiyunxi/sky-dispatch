@@ -80,6 +80,8 @@ public class BatteryRelayService {
     private final DispatchTaskRepository taskRepository;
     private final RouteService routeService;
     private final EnergyModel energyModel;
+    private final AltitudeLayers altitudeLayers;
+    private final ChargingStationRegistry chargingRegistry;
     private final EventService eventService;
     private final RerouteRegistry rerouteRegistry;
     private final SkyProperties properties;
@@ -89,6 +91,8 @@ public class BatteryRelayService {
                                DispatchTaskRepository taskRepository,
                                RouteService routeService,
                                EnergyModel energyModel,
+                               AltitudeLayers altitudeLayers,
+                               ChargingStationRegistry chargingRegistry,
                                EventService eventService,
                                RerouteRegistry rerouteRegistry,
                                SkyProperties properties) {
@@ -97,6 +101,8 @@ public class BatteryRelayService {
         this.taskRepository = taskRepository;
         this.routeService = routeService;
         this.energyModel = energyModel;
+        this.altitudeLayers = altitudeLayers;
+        this.chargingRegistry = chargingRegistry;
         this.eventService = eventService;
         this.rerouteRegistry = rerouteRegistry;
         this.properties = properties;
@@ -228,24 +234,28 @@ public class BatteryRelayService {
                                                  BigDecimal usableWh,
                                                  List<ChargingStation> stations) {
         ChargingStation best = null;
-        double bestDistance = Double.MAX_VALUE;
+        double bestScore = Double.MAX_VALUE;
         double budget = usableWh.doubleValue() * 0.9;
         for (ChargingStation station : stations) {
             if (station.getLat() == null || station.getLon() == null) {
                 continue;
             }
             double distance = position.distanceTo(new GeoPoint(station.getLat(), station.getLon()));
-            if (distance >= bestDistance) {
-                continue;
-            }
             // 飞得到的判据：飞到站的巡航能耗 + 一次降落悬停，必须落在可用电量预算内
             double reachWh = energyModel.cruiseEnergyWh(model, distance, payload).doubleValue()
                     + energyModel.hoverEnergyWh(model, payload).doubleValue();
             if (reachWh > budget) {
                 continue;
             }
-            best = station;
-            bestDistance = distance;
+            // 有空桩优先；满站按排队长度加惩罚，避免所有飞机都往同一个热门站挤
+            int capacity = chargingRegistry.capacity(station);
+            int occupancy = chargingRegistry.occupancy(station.getId());
+            int waiting = chargingRegistry.queueLength(station.getId());
+            double score = distance + (occupancy < capacity ? 0 : 2000.0 + waiting * 500.0);
+            if (score < bestScore) {
+                best = station;
+                bestScore = score;
+            }
         }
         return best;
     }
@@ -255,8 +265,9 @@ public class BatteryRelayService {
                         boolean delivered, GeoPoint position, BigDecimal needWh, BigDecimal usableWh,
                         BigDecimal simTime, Long runId) {
         GeoPoint target = new GeoPoint(station.getLat(), station.getLon());
+        // 改航保持本机原有高度层，避免中途换层制造新的穿越冲突
         routeService.replaceWithStraightLine(task.getRouteId(), position, target,
-                properties.flight().defaultAltitudeM());
+                altitudeLayers.forDrone(drone));
         task.setActualDistanceM(BigDecimal.ZERO);
         task.setCurrentWaypointSeq(0);
         taskRepository.save(task);
@@ -304,8 +315,29 @@ public class BatteryRelayService {
         drone.setLastHeartbeatAt(java.time.Instant.now());
         droneRepository.save(drone);
 
-        String message = String.format("无人机 %s 已降落「%s」，开始补能（当前 %s%%）",
-                drone.getCode(), plan.stationName(), drone.getBatteryPct());
+        // 桩位是有限资源：有空格才能充，满了就排队（排队期间仍占用站点等待位）
+        ChargingStation station = stationRepository.findById(plan.stationId()).orElse(null);
+        int capacity = chargingRegistry.capacity(station);
+        boolean acquired = chargingRegistry.tryAcquire(plan.stationId(), drone.getId(), capacity);
+        boolean lowBatteryPriority = false;
+        if (!acquired) {
+            double battery = drone.getBatteryPct() == null ? 0 : drone.getBatteryPct().doubleValue();
+            lowBatteryPriority = battery <= properties.dispatch().minBatteryReservePct() + 10;
+            if (lowBatteryPriority) {
+                chargingRegistry.enqueueFirst(plan.stationId(), drone.getId());
+            } else {
+                chargingRegistry.enqueue(plan.stationId(), drone.getId());
+            }
+        }
+        String message = acquired
+                ? String.format("无人机 %s 已降落「%s」，开始补能（当前 %s%%，桩位 %d/%d）",
+                        drone.getCode(), plan.stationName(), drone.getBatteryPct(),
+                        chargingRegistry.occupancy(plan.stationId()), capacity)
+                : String.format("无人机 %s 抵达「%s」，桩位已满（%d/%d），进入排队第 %d 位%s",
+                        drone.getCode(), plan.stationName(),
+                        chargingRegistry.occupancy(plan.stationId()), capacity,
+                        chargingRegistry.queuePosition(drone.getId()),
+                        lowBatteryPriority ? "（低电优先）" : "");
         eventService.simulation(EVENT_RELAY_ARRIVED, message, runId, simTime);
         log.info("[自主补能] {}", message);
     }
@@ -322,9 +354,27 @@ public class BatteryRelayService {
         if (plan == null) {
             return false;
         }
+        ChargingStation station = stationRepository.findById(plan.stationId()).orElse(null);
+        int capacity = chargingRegistry.capacity(station);
+
+        // 排队中：本拍不充电，只尝试叫号；排到了再开始充
+        if (chargingRegistry.isQueued(drone.getId())) {
+            int promoted = chargingRegistry.promote(plan.stationId(), capacity);
+            if (!chargingRegistry.isCharging(drone.getId())) {
+                droneRepository.save(drone);
+                return false;
+            }
+            String queuedMessage = String.format("无人机 %s 轮到补能（当前 %s%%，等待队列推进 %d 架）",
+                    drone.getCode(), drone.getBatteryPct(), promoted);
+            eventService.simulation(EVENT_RELAY_ARRIVED, queuedMessage, runId, simTime);
+            log.info("[自主补能] {}", queuedMessage);
+        }
+
         SkyProperties.Dispatch cfg = properties.dispatch();
         double battery = drone.getBatteryPct() == null ? 0 : drone.getBatteryPct().doubleValue();
-        double gain = properties.simulation().rechargeRatePctPerSimSec() * simDeltaSeconds;
+        // 充电曲线：高 SOC 进入恒压段，功率衰减
+        double gain = properties.simulation().rechargeRatePctPerSimSec()
+                * chargingRegistry.powerFactor(battery) * simDeltaSeconds;
         double next = Math.min(cfg.relayResumePct(), battery + gain);
         drone.setBatteryPct(BigDecimal.valueOf(next).setScale(2, RoundingMode.HALF_UP));
 
@@ -333,14 +383,14 @@ public class BatteryRelayService {
             return false;
         }
 
-        // 充满：重建"充电站 → 接下来那一段的终点"的航路，然后继续飞
-        ChargingStation station = stationRepository.findById(plan.stationId()).orElse(null);
+        // 充满：释放桩位，重建"充电站 → 接下来那一段的终点"的航路，然后继续飞
+        chargingRegistry.release(drone.getId());
         GeoPoint from = station == null || station.getLat() == null
                 ? positionOf(drone)
                 : new GeoPoint(station.getLat(), station.getLon());
         GeoPoint to = new GeoPoint(plan.resumeLat(), plan.resumeLon());
         routeService.replaceWithStraightLine(task.getRouteId(), from, to,
-                properties.flight().defaultAltitudeM());
+                altitudeLayers.forDrone(drone));
         task.setActualDistanceM(BigDecimal.ZERO);
         task.setCurrentWaypointSeq(0);
         task.setStatus(plan.resumeLeg() == RerouteRegistry.Leg.RETURNING

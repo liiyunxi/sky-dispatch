@@ -834,6 +834,8 @@ const ZONE_STYLE: Record<string, L.PathOptions> = {
   RESTRICTED: { color: '#fa8c16', weight: 2, fillColor: '#fa8c16', fillOpacity: 0.1 },
   // 建筑障碍（高楼）：紫色虚线，与"禁飞/限飞"的红橙拉开，一眼看出它是可绕可越的实体障碍
   BUILDING: { color: '#722ed1', weight: 2, dashArray: '3 3', fillColor: '#722ed1', fillOpacity: 0.14 },
+  // 地形障碍（山体）：棕色点线，底部贴地，语义上"飞过山顶即可"
+  TERRAIN: { color: '#8c5a2b', weight: 2, dashArray: '2 4', fillColor: '#8c5a2b', fillOpacity: 0.15 },
   CORRIDOR: { color: '#52c41a', weight: 2, dashArray: '6 4', fillColor: '#52c41a', fillOpacity: 0.06 },
   WARNING: { color: '#faad14', weight: 2, dashArray: '4 4', fillColor: '#faad14', fillOpacity: 0.06 },
 }
@@ -873,7 +875,8 @@ function rebuildStations(): void {
         `<b>${station.name}</b><br/>` +
           `编码：${station.code}<br/>` +
           `城市：${station.city}<br/>` +
-          `桩位：${station.chargeSlots} 个` +
+          `桩位：${station.occupancy ?? 0}/${station.chargeSlots} 占用` +
+          ((station.queueLength ?? 0) > 0 ? `，排队 ${station.queueLength} 架` : '') +
           (station.remark ? `<br/>备注：${station.remark}` : ''),
       )
       .addTo(stationLayer)
@@ -885,11 +888,16 @@ function rebuildZones() {
   zoneLayer.clearLayers()
   props.zones.forEach((zone) => {
     const style = ZONE_STYLE[zone.zoneType] ?? ZONE_STYLE.WARNING
+    const windowText =
+      zone.activeFromSimSec != null || zone.activeToSimSec != null
+        ? `仿真时间窗：${zone.activeFromSimSec ?? 0} ~ ${zone.activeToSimSec ?? '长期'} s<br/>`
+        : '仿真时间窗：长期有效<br/>'
     const popupHtml = `
       <b>${zone.name}</b><br/>
       类型：${ZONE_TYPE_TEXT[zone.zoneType] ?? zone.zoneType}<br/>
       编码：${zone.code}<br/>
       生效高度：${zone.minAltitudeM ?? 0} ~ ${zone.maxAltitudeM ?? 120} m<br/>
+      ${windowText}
       严重度：${zone.severity ? (CONFLICT_SEVERITY_TEXT[zone.severity] ?? zone.severity) : '—'}
       ${zone.remark ? `<br/>备注：${zone.remark}` : ''}
     `
@@ -969,6 +977,12 @@ function buildPopup(frame: DroneFrame): string {
     <b>${frame.droneCode}</b><br/>
     状态：${DRONE_STATUS_TEXT[frame.status] ?? frame.status}<br/>
     电量：${formatPercent(frame.batteryPct ?? undefined)}<br/>
+    遥测：${
+      frame.commLost ? '失联（沿用最后位置）'
+        : frame.stale ? '丢包（沿用上一帧）'
+        : frame.gpsDrift ? '定位漂移'
+        : '正常'
+    }<br/>
     高度：${(frame.altitudeM ?? 0).toFixed(0)} m &nbsp; 速度：${(frame.speedMps ?? 0).toFixed(1)} m/s<br/>
     航向：${(frame.headingDeg ?? 0).toFixed(0)}°
     ${frame.orderNo ? `<br/>订单：${frame.orderNo}` : ''}

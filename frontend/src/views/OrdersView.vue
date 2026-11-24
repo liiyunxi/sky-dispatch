@@ -282,7 +282,17 @@ interface SlaInfo {
 /** SLA 文案：已完单给结论，进行中给"还剩多久 / 超时多久" */
 function slaOf(order: Order): SlaInfo {
   if (order.status === 'DELIVERED') {
-    return { text: `完成交付 · ${formatDateTime(order.updatedAt)}`, tone: 'success' }
+    // 准时判定用实际送达时间（deliveredAt），而不是任务完成（含返航）时间
+    if (order.deliveredAt && order.expectDeliveryAt) {
+      const seconds = dayjs(order.deliveredAt).diff(dayjs(order.expectDeliveryAt), 'second')
+      return seconds <= 0
+        ? { text: `已送达（提前 ${formatDuration(-seconds)}）`, tone: 'success' }
+        : { text: `已送达（超时 ${formatDuration(seconds)}）`, tone: 'danger' }
+    }
+    return {
+      text: `完成交付 · ${formatDateTime(order.deliveredAt ?? order.updatedAt)}`,
+      tone: 'success',
+    }
   }
   if (order.status === 'FAILED') {
     return { text: order.failReason ? `失败：${order.failReason}` : '订单失败', tone: 'danger' }
@@ -1314,6 +1324,7 @@ async function loadZones(): Promise<void> {
                 <em>货物</em>{{ traceOrderView?.cargoName ?? '—' }} · {{ Number(traceOrderView?.weightKg ?? 0).toFixed(2) }} kg
               </span>
               <span><em>期望送达</em>{{ formatDateTime(traceOrderView?.expectDeliveryAt) }}</span>
+              <span><em>实际送达</em>{{ formatDateTime(traceOrderView?.deliveredAt) }}</span>
               <span><em>执行无人机</em>{{ traceLatestTask?.droneCode ?? (traceOrderView ? droneLabel(traceOrderView) : '—') }}</span>
             </div>
           </div>

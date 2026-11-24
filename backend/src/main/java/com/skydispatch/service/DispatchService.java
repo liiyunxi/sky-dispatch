@@ -40,10 +40,12 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 调度服务 —— 本平台的大脑。
@@ -101,6 +103,29 @@ public class DispatchService {
     /** 第③段：短写事务（加锁复核 + 落库） */
     private final TransactionTemplate writeTx;
 
+    /**
+     * 充电站台账短缓存。
+     *
+     * <p>站点是低频变更数据，但批量派单会为每个订单重新查一次；
+     * 10 秒缓存把"每单一次"降为"每 10 秒一次"，站点点位变化最多滞后 10 秒。
+     */
+    private static final long STATION_CACHE_TTL_NANOS = 10_000_000_000L;
+    private volatile List<ChargingStation> stationCache = List.of();
+    private volatile long stationCacheAtNanos = 0L;
+
+    /**
+     * 可达性结果短缓存。
+     *
+     * <p>批量派单先预览候选、提交前又会再准备一次，同一 (订单, 飞机, 电量, 位置)
+     * 会做两遍图搜索。2 秒内复用同一结果，既省掉重复搜索，又不会拿明显过期的
+     * 电量/位置做续航判断（key 里带电量与坐标量化值）。
+     */
+    private static final long PLAN_CACHE_TTL_NANOS = 2_000_000_000L;
+    private final Map<String, CachedPlan> planCache = new ConcurrentHashMap<>();
+
+    private record CachedPlan(long atNanos, ReachabilityService.Plan plan) {
+    }
+
     public DispatchService(OrderService orderService,
                            DispatchTaskRepository taskRepository,
                            DispatchDecisionRepository decisionRepository,
@@ -142,7 +167,18 @@ public class DispatchService {
      * @param strategyName 策略名，传空则用配置默认值
      */
     public TaskDtos.DispatchResult dispatchOrder(Long orderId, String strategyName) {
-        PreparedDispatch prepared = readTx.execute(status -> prepare(orderId, strategyName));
+        return dispatchOrder(orderId, strategyName, null);
+    }
+
+    /**
+     * 派单（可指定优先无人机）。
+     *
+     * <p>批量派单会先在一份共享的机队快照上算出分配方案，再逐个提交；
+     * 提交时把方案里的无人机作为偏好传入，既保留第③段的重新校验/加锁，
+     * 又避免"提交时又改选别的飞机"把批量优化结果冲掉。
+     */
+    public TaskDtos.DispatchResult dispatchOrder(Long orderId, String strategyName, Long preferredDroneId) {
+        PreparedDispatch prepared = readTx.execute(status -> prepare(orderId, strategyName, preferredDroneId));
         if (prepared == null) {
             throw BusinessException.illegalState("派单准备阶段没有返回结果，请重试");
         }
@@ -154,7 +190,7 @@ public class DispatchService {
     }
 
     /** 第①段：只读事务内完成状态校验、候选筛选与决策快照。 */
-    private PreparedDispatch prepare(Long orderId, String strategyName) {
+    private PreparedDispatch prepare(Long orderId, String strategyName, Long preferredDroneId) {
         DeliveryOrder order = orderService.require(orderId);
         DispatchStrategy strategy = strategyFactory.get(strategyName);
 
@@ -181,6 +217,15 @@ public class DispatchService {
         ranked.sort(Comparator.comparing(ScoredCandidate::candidate, strategy.comparator())
                 .thenComparing(sc -> sc.candidate().code()));
         ScoredCandidate best = ranked.get(0);
+        // 批量方案指定了这单该用哪架飞机：只要它仍满足全部硬条件，就尊重批量结果
+        if (preferredDroneId != null) {
+            for (ScoredCandidate sc : ranked) {
+                if (preferredDroneId.equals(sc.drone().getId())) {
+                    best = sc;
+                    break;
+                }
+            }
+        }
         List<ScoredCandidate> allRanked = new ArrayList<>(ranked);
         all.stream().filter(sc -> !sc.passed()).forEach(allRanked::add);
 
@@ -408,10 +453,10 @@ public class DispatchService {
         double tripDistance = pickup.distanceTo(dropoff);
         double payload = order.getWeightKg().doubleValue();
 
-        // 站点台账只查一次：本次评估的所有飞机共用同一张补能网络图
-        List<ChargingStation> stations = cfg.relayChargingEnabled()
-                ? stationRepository.findAllByEnabledTrue()
-                : List.of();
+        // 站点台账只查一次（短缓存）：本次评估的所有飞机共用同一张补能网络图
+        List<ChargingStation> stations = stationsForDispatch();
+        // 在途任务数一次查出：避免"每架飞机一条 count SQL"在批量派单时被放大
+        Map<Long, Long> activeTaskCounts = activeTaskCounts();
 
         List<ScoredCandidate> results = new ArrayList<>();
         // 用 findAllWithModel()：一次 JOIN 取出机型，避免在事务边界外访问懒加载关联
@@ -419,7 +464,7 @@ public class DispatchService {
             DroneModel model = drone.getModel();
             GeoPoint position = currentPosition(drone);
             double distanceToPickup = position.distanceTo(pickup);
-            long activeTasks = taskRepository.countByDroneIdAndStatusIn(drone.getId(), ACTIVE_TASK_STATUSES);
+            long activeTasks = activeTaskCounts.getOrDefault(drone.getId(), 0L);
             double battery = drone.getBatteryPct() == null ? 0 : drone.getBatteryPct().doubleValue();
             // 可用电量 = 当前电量 - 安全冗余，续航判断必须基于可用电量
             double usableBattery = Math.max(0, battery - cfg.minBatteryReservePct());
@@ -440,8 +485,8 @@ public class DispatchService {
             // 前置条件都过了才做可达性分析：忙碌/超重/超半径的飞机没必要跑图上搜索
             ReachabilityService.Plan plan = null;
             if (reason == null) {
-                plan = reachability.analyze(model, position, pickup, dropoff,
-                        homePoint(drone), payload, usableEnergy, stations);
+                plan = analyzeCached(order, drone, model, position, pickup, dropoff,
+                        payload, usableEnergy, stations);
                 if (!plan.feasible()) {
                     reason = "续航不可达：" + plan.failureReason();
                 }
@@ -463,6 +508,59 @@ public class DispatchService {
             results.add(new ScoredCandidate(drone, model, candidate, plan, reason == null, note));
         }
         return results;
+    }
+
+    /** 充电站台账：10 秒短缓存，避免批量派单每单查一次。 */
+    private List<ChargingStation> stationsForDispatch() {
+        if (!properties.dispatch().relayChargingEnabled()) {
+            return List.of();
+        }
+        long now = System.nanoTime();
+        if (stationCache.isEmpty() || now - stationCacheAtNanos > STATION_CACHE_TTL_NANOS) {
+            stationCache = stationRepository.findAllByEnabledTrue();
+            stationCacheAtNanos = now;
+        }
+        return stationCache;
+    }
+
+    /** 全机队在途任务数：一条 group by 查询代替逐机 count。 */
+    private Map<Long, Long> activeTaskCounts() {
+        Map<Long, Long> counts = new HashMap<>();
+        for (Object[] row : taskRepository.countActiveGroupedByDrone(ACTIVE_TASK_STATUSES)) {
+            if (row[0] == null) {
+                continue;
+            }
+            counts.put(((Number) row[0]).longValue(), ((Number) row[1]).longValue());
+        }
+        return counts;
+    }
+
+    /**
+     * 可达性分析短缓存：预览与提交对同一订单/飞机/电量/位置只算一次。
+     *
+     * <p>坐标量化到 1e-4 度（约 11m）、电量量化到 0.1%，
+     * 超过量化范围就会重新搜索，避免用过期快照做续航判断。
+     */
+    private ReachabilityService.Plan analyzeCached(DeliveryOrder order, Drone drone, DroneModel model,
+                                                   GeoPoint position, GeoPoint pickup, GeoPoint dropoff,
+                                                   double payload, BigDecimal usableEnergy,
+                                                   List<ChargingStation> stations) {
+        String key = order.getId() + ":" + drone.getId() + ":"
+                + Math.round(usableEnergy.doubleValue() * 10) + ":"
+                + Math.round(position.lat() * 10_000) + ":"
+                + Math.round(position.lon() * 10_000);
+        long now = System.nanoTime();
+        CachedPlan cached = planCache.get(key);
+        if (cached != null && now - cached.atNanos() < PLAN_CACHE_TTL_NANOS) {
+            return cached.plan();
+        }
+        ReachabilityService.Plan plan = reachability.analyze(model, position, pickup, dropoff,
+                homePoint(drone), payload, usableEnergy, stations);
+        if (planCache.size() > 4096) {
+            planCache.clear();
+        }
+        planCache.put(key, new CachedPlan(now, plan));
+        return plan;
     }
 
     /** 无人机当前位置：优先用实时坐标，没有则回落到机巢。 */

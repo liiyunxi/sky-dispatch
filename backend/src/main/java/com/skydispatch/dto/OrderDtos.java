@@ -53,6 +53,8 @@ public final class OrderDtos {
             CommonDtos.GeoDto pickup,
             CommonDtos.GeoDto dropoff,
             Instant expectDeliveryAt,
+            /** 实际送达时间（准时率口径）。 */
+            Instant deliveredAt,
             Long assignedDroneId,
             String failReason,
             String remark,
@@ -65,8 +67,8 @@ public final class OrderDtos {
                     o.getCargoName(), o.getWeightKg(), o.getPriority(), o.getStatus(),
                     new CommonDtos.GeoDto(o.getPickupLat(), o.getPickupLon(), o.getPickupAddress()),
                     new CommonDtos.GeoDto(o.getDropoffLat(), o.getDropoffLon(), o.getDropoffAddress()),
-                    o.getExpectDeliveryAt(), o.getAssignedDroneId(), o.getFailReason(), o.getRemark(),
-                    o.getCreatedAt(), o.getUpdatedAt());
+                    o.getExpectDeliveryAt(), o.getDeliveredAt(), o.getAssignedDroneId(),
+                    o.getFailReason(), o.getRemark(), o.getCreatedAt(), o.getUpdatedAt());
         }
     }
 

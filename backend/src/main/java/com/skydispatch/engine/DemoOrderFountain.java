@@ -27,7 +27,6 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Random;
 
@@ -65,7 +64,7 @@ public class DemoOrderFountain {
      * <p>与后端"参与路径规划"的口径保持一致（禁飞区 / 限飞区 / 建筑障碍）。
      */
     private static final List<ZoneType> OBSTACLE_ZONE_TYPES =
-            List.of(ZoneType.NO_FLY, ZoneType.RESTRICTED, ZoneType.BUILDING);
+            List.of(ZoneType.NO_FLY, ZoneType.RESTRICTED, ZoneType.BUILDING, ZoneType.TERRAIN);
 
     /** 目的地距离范围（公里）：往返 3.6~7.6km，近到各机型在 60% 电量下都能完成。 */
     private static final double MIN_DISTANCE_KM = 1.8;
@@ -90,6 +89,14 @@ public class DemoOrderFountain {
     private static final int MAX_LOCATION_TRIES = 8;
     /** 每度纬度对应的公里数（上海一带足够精确）。 */
     private static final double KM_PER_DEGREE_LAT = 111.0;
+
+    /** 四个演示城市的中心点（用于早晚高峰的"进城/出城"方向偏好）。 */
+    private static final double[][] CITY_CENTERS = {
+            {31.2304, 121.4737},   // 上海 人民广场
+            {39.9087, 116.4074},   // 北京 国贸
+            {22.5431, 114.0579},   // 深圳 福田
+            {30.5728, 104.0668},   // 成都 天府广场
+    };
 
     // ---- 演示用文案常量（集中定义，不在逻辑里散落裸字符串） ----
     private static final String[] CUSTOMERS = {
@@ -116,6 +123,8 @@ public class DemoOrderFountain {
     private final ReachabilityService reachability;
     private final ChargingStationRepository stationRepository;
     private final EnergyModel energyModel;
+    private final FlightTimeEstimator timeEstimator;
+    private final AltitudeLayers altitudeLayers;
 
     public DemoOrderFountain(SkyProperties properties,
                              DroneRepository droneRepository,
@@ -124,7 +133,9 @@ public class DemoOrderFountain {
                              OrderService orderService,
                              ReachabilityService reachability,
                              ChargingStationRepository stationRepository,
-                             EnergyModel energyModel) {
+                             EnergyModel energyModel,
+                             FlightTimeEstimator timeEstimator,
+                             AltitudeLayers altitudeLayers) {
         this.properties = properties;
         this.droneRepository = droneRepository;
         this.orderRepository = orderRepository;
@@ -133,6 +144,8 @@ public class DemoOrderFountain {
         this.reachability = reachability;
         this.stationRepository = stationRepository;
         this.energyModel = energyModel;
+        this.timeEstimator = timeEstimator;
+        this.altitudeLayers = altitudeLayers;
     }
 
     /**
@@ -141,7 +154,7 @@ public class DemoOrderFountain {
      * @return 本次新生成的订单数
      */
     @Transactional
-    public int replenishIfNeeded() {
+    public int replenishIfNeeded(java.math.BigDecimal simTimeS) {
         SkyProperties.Simulation cfg = properties.simulation();
         if (!cfg.demoReplenishEnabled()) {
             return 0;
@@ -163,10 +176,10 @@ public class DemoOrderFountain {
                 .limit(toCreate)
                 .toList();
 
-        // 没有可用运力就不造单（飞机正在充电/都在忙），等下一拍再试，避免造出无人能接的积压单
+        double simHour = simHour(simTimeS);
         int created = 0;
         for (Drone anchor : anchors) {
-            OrderDtos.CreateRequest request = buildOrderFor(anchor);
+            OrderDtos.CreateRequest request = buildOrderFor(anchor, simHour);
             if (request == null) {
                 continue;
             }
@@ -174,14 +187,20 @@ public class DemoOrderFountain {
             created++;
         }
         if (created > 0) {
-            log.info("演示补给：活动订单 {} < 目标 {}，新生成 {} 单（按可用运力构造，保证可送达）",
-                    activeOrders, cfg.targetActiveOrders(), created);
+            log.info("演示补给（仿真 {:02.0f}:00 时段）：活动订单 {} < 目标 {}，新生成 {} 单",
+                    Math.floor(simHour), activeOrders, cfg.targetActiveOrders(), created);
         }
         return created;
     }
 
-    /** 为指定锚点飞机构造一张它必然能承接的订单；选址多次仍落在禁飞区则返回 null。 */
-    private OrderDtos.CreateRequest buildOrderFor(Drone anchor) {
+    /** 演示时钟从 08:00 开始，按仿真秒推进到 24 小时制。 */
+    private double simHour(java.math.BigDecimal simTimeS) {
+        double seconds = simTimeS == null ? 0 : simTimeS.doubleValue();
+        return 8.0 + (seconds / 3600.0) % 24.0;
+    }
+
+    /** 为指定锚点飞机构造一张它必然能承接的订单；选址多次仍落在障碍物则返回 null。 */
+    private OrderDtos.CreateRequest buildOrderFor(Drone anchor, double simHour) {
         double homeLat = anchor.getHomeLat();
         double homeLon = anchor.getHomeLon();
 
@@ -190,17 +209,16 @@ public class DemoOrderFountain {
         double weight = Math.max(0.3, Math.round(maxPayload * ratio * 10.0) / 10.0);
 
         /*
-         * 为什么要掺一部分"长单"：如果永远只造 2~4km 的近单，
-         * "无人机飞不完就自主落到充电站补能"这条能力在演示里永远看不到 ——
-         * 而它恰恰是长航程运营的关键。所以按比例造一些 8~14km 的单。
-         *
-         * 但长单不能随便造：万一附近没有可落站点，这张单会永远派不出去，
-         * 还会把"活动订单数"顶住导致不再补单（早期就是这么静止的）。
-         * 所以造长单之前先用派单同一套判据验一遍"取货后能落到站补能"，
-         * 验不过就退回近单。
+         * 为什么掺长单：如果永远只造 2~4km 的近单，"自主落到充电站补能"在演示里永远看不到。
+         * 早/晚高峰把长单比例略调高，模拟"跨区急件"；能否造出由可达性分析把关。
          */
-        boolean wantLong = random.nextDouble() < LONG_ORDER_RATIO;
+        boolean peak = isPeakHour(simHour);
+        boolean wantLong = random.nextDouble() < (peak ? 0.30 : LONG_ORDER_RATIO);
         double[] drop = wantLong ? pickLongDropoff(anchor, weight) : null;
+        if (drop == null) {
+            // 时空分布：早高峰往城市中心送（居住区 → CBD），晚高峰反向（CBD → 居住区）
+            drop = pickSpatialDropoff(anchor, simHour);
+        }
         if (drop == null) {
             drop = pickDropoff(homeLat, homeLon);
         }
@@ -208,10 +226,27 @@ public class DemoOrderFountain {
             return null;
         }
 
-        Priority priority = pickPriority();
+        Priority priority = pickPriority(simHour);
         String customer = CUSTOMERS[random.nextInt(CUSTOMERS.length)];
         String cargo = CARGOES[random.nextInt(CARGOES.length)];
         String dropLabel = DROP_LABELS[random.nextInt(DROP_LABELS.length)];
+
+        // 期望送达时间与 ETA 同口径：飞行时间 + 自动派单扫描间隔 + 地面时隙/周转，再乘优先级松弛
+        double distanceM = GeoUtils.haversineMeters(homeLat, homeLon, drop[0], drop[1]);
+        double bearing = GeoUtils.bearingDegrees(homeLat, homeLon, drop[0], drop[1]);
+        int etaSeconds = timeEstimator.estimate(distanceM, anchor.getModel(),
+                altitudeLayers.forDrone(anchor), bearing).seconds();
+        double speedFactor = Math.max(1.0, properties.simulation().speedFactor());
+        double dispatchLatencySim = properties.simulation().autoDispatchIntervalMs() / 1000.0 * speedFactor;
+        double promisedSimSeconds = etaSeconds + dispatchLatencySim + 30.0;
+        double slack = switch (priority) {
+            case URGENT -> 1.35;
+            case HIGH -> 1.50;
+            case NORMAL -> 1.80;
+            case LOW -> 2.20;
+        };
+        long wallSeconds = Math.max(45L,
+                Math.round(promisedSimSeconds / speedFactor * slack));
 
         return new OrderDtos.CreateRequest(
                 customer,
@@ -221,8 +256,29 @@ public class DemoOrderFountain {
                 priority,
                 new CommonDtos.GeoDto(homeLat, homeLon, "无人机起降点"),
                 new CommonDtos.GeoDto(drop[0], drop[1], dropLabel),
-                Instant.now().plus(2, ChronoUnit.HOURS),
-                "演示系统自动补给订单" + (wantLong ? "（长航程·途中自主补能）" : ""));
+                Instant.now().plusSeconds(wallSeconds),
+                String.format("演示系统自动补给订单（%s%s）", slotLabel(simHour),
+                        wantLong ? "·长航程·途中自主补能" : ""));
+    }
+
+    /** 早高峰 06:30~10:30，晚高峰 16:30~20:30。 */
+    private boolean isPeakHour(double hour) {
+        double h = ((hour % 24) + 24) % 24;
+        return (h >= 6.5 && h < 10.5) || (h >= 16.5 && h < 20.5);
+    }
+
+    private String slotLabel(double hour) {
+        double h = ((hour % 24) + 24) % 24;
+        if (h >= 6.5 && h < 10.5) {
+            return "早高峰";
+        }
+        if (h >= 16.5 && h < 20.5) {
+            return "晚高峰";
+        }
+        if (h >= 10.5 && h < 16.5) {
+            return "日间平峰";
+        }
+        return "夜间";
     }
 
     /**
@@ -336,13 +392,63 @@ public class DemoOrderFountain {
         return false;
     }
 
-    /** 优先级分布：少量急救/高优先级，多数普通，少量低优先级。 */
-    private Priority pickPriority() {
+    /**
+     * 时空热点选址：早高峰从居住区飞向城市中心，晚高峰反向。
+     *
+     * <p>只按随机角度造单会让看板上的订单方向均匀铺开，看不出"潮汐需求"。
+     * 这里用城市中心与机巢的相对方位确定主方向，再叠加 ±25° 抖动与随机距离，
+     * 既保留随机性，又能看出早高峰"进城多"、晚高峰"出城多"。
+     */
+    private double[] pickSpatialDropoff(Drone anchor, double simHour) {
+        double hour = ((simHour % 24) + 24) % 24;
+        boolean morning = hour >= 6.5 && hour < 10.5;
+        boolean evening = hour >= 16.5 && hour < 20.5;
+        if (!morning && !evening) {
+            return null;
+        }
+        double homeLat = anchor.getHomeLat();
+        double homeLon = anchor.getHomeLon();
+        double[] center = nearestCityCenter(homeLat, homeLon);
+        if (center == null) {
+            return null;
+        }
+        double bearing = morning
+                ? GeoUtils.bearingDegrees(homeLat, homeLon, center[0], center[1])
+                : GeoUtils.bearingDegrees(center[0], center[1], homeLat, homeLon);
+        List<AirspaceZone> obstacles = activeObstacles();
+        for (int attempt = 0; attempt < MAX_LOCATION_TRIES; attempt++) {
+            double distanceKm = 2.2 + random.nextDouble() * 4.5;
+            double jittered = bearing + (random.nextDouble() - 0.5) * 50.0;
+            double[] candidate = offsetPoint(homeLat, homeLon, distanceKm, Math.toRadians(jittered));
+            if (!isInsideAnyObstacle(candidate[0], candidate[1], obstacles)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    /** 最近的城市中心；离四个演示城市都太远时返回 null（不在热点区域就不做方向偏置）。 */
+    private double[] nearestCityCenter(double lat, double lon) {
+        double[] best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (double[] center : CITY_CENTERS) {
+            double distance = GeoUtils.haversineMeters(lat, lon, center[0], center[1]);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = center;
+            }
+        }
+        return bestDistance <= 60_000 ? best : null;
+    }
+
+    /** 优先级分布：高峰时段急救/高优先级比例更高，模拟真实潮汐需求。 */
+    private Priority pickPriority(double simHour) {
+        boolean peak = isPeakHour(simHour);
         int roll = random.nextInt(100);
-        if (roll < 8) {
+        if (roll < (peak ? 13 : 8)) {
             return Priority.URGENT;
         }
-        if (roll < 28) {
+        if (roll < (peak ? 38 : 28)) {
             return Priority.HIGH;
         }
         if (roll < 85) {

@@ -4,6 +4,7 @@ import com.skydispatch.domain.entity.DispatchTask;
 import com.skydispatch.domain.entity.Drone;
 import com.skydispatch.domain.entity.SimulationRun;
 import com.skydispatch.domain.entity.Telemetry;
+import com.skydispatch.engine.TelemetryObservationService;
 import com.skydispatch.repository.TelemetryRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,15 +31,24 @@ public class TelemetryService {
     private static final Logger log = LoggerFactory.getLogger(TelemetryService.class);
 
     private final TelemetryRepository telemetryRepository;
+    private final TelemetryObservationService observation;
 
-    public TelemetryService(TelemetryRepository telemetryRepository) {
+    public TelemetryService(TelemetryRepository telemetryRepository,
+                            TelemetryObservationService observation) {
         this.telemetryRepository = telemetryRepository;
+        this.observation = observation;
     }
 
-    /** 记录一拍遥测。 */
+    /** 记录一拍遥测（观测值：含噪声/丢包，通信中断时整拍缺失）。 */
     @Transactional
     public void record(SimulationRun run, DispatchTask task, Drone drone, BigDecimal simTimeS,
                        long stepIndex, BigDecimal progressPct) {
+        double simTime = simTimeS == null ? 0 : simTimeS.doubleValue();
+        TelemetryObservationService.Observation observed =
+                observation.observeForRecord(drone, simTime, stepIndex);
+        if (observed == null) {
+            return;   // 丢包/通信中断：这一拍没有可落库的遥测
+        }
         Telemetry telemetry = Telemetry.builder()
                 .runId(run == null ? null : run.getId())
                 .taskId(task == null ? null : task.getId())
@@ -46,12 +56,12 @@ public class TelemetryService {
                 .ts(java.time.Instant.now())
                 .simTimeS(simTimeS)
                 .stepIndex(stepIndex)
-                .lat(drone.getCurrentLat())
-                .lon(drone.getCurrentLon())
-                .altitudeM(drone.getAltitudeM())
-                .speedMps(drone.getSpeedMps())
-                .headingDeg(drone.getHeadingDeg())
-                .batteryPct(drone.getBatteryPct())
+                .lat(observed.lat())
+                .lon(observed.lon())
+                .altitudeM(BigDecimal.valueOf(observed.altitudeM()).setScale(2, java.math.RoundingMode.HALF_UP))
+                .speedMps(BigDecimal.valueOf(observed.speedMps()).setScale(2, java.math.RoundingMode.HALF_UP))
+                .headingDeg(BigDecimal.valueOf(observed.headingDeg()).setScale(2, java.math.RoundingMode.HALF_UP))
+                .batteryPct(BigDecimal.valueOf(observed.batteryPct()).setScale(2, java.math.RoundingMode.HALF_UP))
                 .progressPct(progressPct)
                 .build();
         telemetryRepository.save(telemetry);

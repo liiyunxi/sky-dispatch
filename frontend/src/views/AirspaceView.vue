@@ -52,7 +52,7 @@ import {
 
 const { drones: liveFrames, conflicts, resolveConflict } = useTelemetry()
 
-const ZONE_TYPES: ZoneType[] = ['NO_FLY', 'RESTRICTED', 'BUILDING', 'CORRIDOR', 'WARNING']
+const ZONE_TYPES: ZoneType[] = ['NO_FLY', 'RESTRICTED', 'BUILDING', 'TERRAIN', 'CORRIDOR', 'WARNING']
 const SEVERITIES: ConflictSeverity[] = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
 
 /** 与地图图层保持同一套颜色（红=禁飞、橙=限飞、紫=建筑、绿=走廊、黄=警示） */
@@ -60,6 +60,7 @@ const ZONE_HEX: Record<ZoneType, string> = {
   NO_FLY: '#ff4d4f',
   RESTRICTED: '#fa8c16',
   BUILDING: '#722ed1',
+  TERRAIN: '#8c5a2b',
   CORRIDOR: '#52c41a',
   WARNING: '#faad14',
 }
@@ -104,6 +105,7 @@ const typeCounts = computed<Record<ZoneType, number>>(() => {
     NO_FLY: 0,
     RESTRICTED: 0,
     BUILDING: 0,
+    TERRAIN: 0,
     CORRIDOR: 0,
     WARNING: 0,
   }
@@ -215,6 +217,7 @@ const altitudeChart = computed(() => {
       NO_FLY: 0,
       RESTRICTED: 0,
       BUILDING: 0,
+      TERRAIN: 0,
       CORRIDOR: 0,
       WARNING: 0,
     }
@@ -388,6 +391,12 @@ function shapeText(zone: AirspaceZone): string {
   return `多边形 · ${zone.points?.length ?? 0} 个顶点`
 }
 
+/** 仿真时间窗：空表示长期有效。 */
+function windowText(zone: AirspaceZone): string {
+  if (zone.activeFromSimSec == null && zone.activeToSimSec == null) return '长期有效'
+  return `仿真 ${zone.activeFromSimSec ?? 0} ~ ${zone.activeToSimSec ?? '长期'} s`
+}
+
 function occupancyText(zone: AirspaceZone): string {
   if (zone.enabled === false) return '已停用'
   const count = zoneOccupancy.value.get(zone.id) ?? 0
@@ -439,6 +448,9 @@ const form = ref<{
   maxAltitudeM: number
   severity: ConflictSeverity | null
   enabled: boolean
+  /** 仿真时间窗（秒）；空表示长期有效 */
+  activeFromSimSec: number | null
+  activeToSimSec: number | null
   remark: string
 }>({
   code: '',
@@ -452,6 +464,8 @@ const form = ref<{
   maxAltitudeM: 120,
   severity: null,
   enabled: true,
+  activeFromSimSec: null,
+  activeToSimSec: null,
   remark: '',
 })
 
@@ -477,6 +491,8 @@ function resetForm(): void {
     maxAltitudeM: 120,
     severity: null,
     enabled: true,
+    activeFromSimSec: null,
+    activeToSimSec: null,
     remark: '',
   }
   points.value = [emptyPoint(), emptyPoint(), emptyPoint()]
@@ -532,6 +548,14 @@ async function submitZone(): Promise<void> {
     message.warning('高度上限不能低于高度下限')
     return
   }
+  if (
+    current.activeFromSimSec != null &&
+    current.activeToSimSec != null &&
+    current.activeToSimSec <= current.activeFromSimSec
+  ) {
+    message.warning('仿真时间窗的结束时刻必须大于开始时刻')
+    return
+  }
 
   const body: ZoneCreateRequest = {
     code: current.code.trim() || undefined,
@@ -542,6 +566,8 @@ async function submitZone(): Promise<void> {
     maxAltitudeM: current.maxAltitudeM,
     severity: current.severity ?? undefined,
     enabled: current.enabled,
+    activeFromSimSec: current.activeFromSimSec ?? undefined,
+    activeToSimSec: current.activeToSimSec ?? undefined,
     remark: current.remark.trim() || undefined,
   }
   if (current.shapeType === 'CIRCLE') {
@@ -888,6 +914,9 @@ onMounted(() => {
               <span v-else class="muted">按类型默认</span>
             </span>
             <span class="zone-remark" :title="zone.remark">
+              <em>时间窗</em>{{ windowText(zone) }}
+            </span>
+            <span class="zone-remark" :title="zone.remark">
               <em>备注</em>{{ zone.remark || '—' }}
             </span>
           </div>
@@ -1051,6 +1080,32 @@ onMounted(() => {
                 placeholder="按类型自动"
               />
               <div class="field-hint">清空则按类型取默认值：禁飞区严重、走廊宽松</div>
+            </a-form-item>
+          </a-col>
+        </a-row>
+
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="仿真生效开始（s）">
+              <a-input-number
+                v-model:value="form.activeFromSimSec"
+                :min="0"
+                :step="60"
+                placeholder="留空 = 从仿真开始生效"
+                class="num"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item label="仿真生效结束（s）">
+              <a-input-number
+                v-model:value="form.activeToSimSec"
+                :min="0"
+                :step="60"
+                placeholder="留空 = 长期有效"
+                class="num"
+              />
+              <div class="field-hint">临时管制按仿真秒开关：到点自动生效/解除，规划与冲突检测同步</div>
             </a-form-item>
           </a-col>
         </a-row>

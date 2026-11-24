@@ -7,6 +7,7 @@ import {
   ApiOutlined,
   AppstoreOutlined,
   CarryOutOutlined,
+  ClusterOutlined,
   DashboardOutlined,
   GlobalOutlined,
   LogoutOutlined,
@@ -157,6 +158,7 @@ const menus = [
   { key: '/tasks', title: '任务管理', icon: CarryOutOutlined },
   { key: '/drones', title: '机队管理', icon: AppstoreOutlined },
   { key: '/airspace', title: '空域管理', icon: GlobalOutlined },
+  { key: '/infrastructure', title: '基础设施', icon: ClusterOutlined },
 ]
 
 /** 实时通道状态 → 徽标颜色与文案 */

@@ -11,6 +11,7 @@ import com.skydispatch.domain.enums.OrderStatus;
 import com.skydispatch.domain.enums.RunStatus;
 import com.skydispatch.domain.enums.TaskStatus;
 import com.skydispatch.dto.DashboardDtos;
+import com.skydispatch.engine.TelemetryObservationService;
 import com.skydispatch.engine.WindField;
 import com.skydispatch.repository.ConflictEventRepository;
 import com.skydispatch.repository.DeliveryOrderRepository;
@@ -59,6 +60,7 @@ public class DashboardService {
     private final TelemetryBroadcaster broadcaster;
     private final SkyProperties properties;
     private final WindField windField;
+    private final TelemetryObservationService observation;
 
     public DashboardService(DeliveryOrderRepository orderRepository,
                             DispatchTaskRepository taskRepository,
@@ -67,7 +69,8 @@ public class DashboardService {
                             SimulationRunRepository runRepository,
                             TelemetryBroadcaster broadcaster,
                             SkyProperties properties,
-                            WindField windField) {
+                            WindField windField,
+                            TelemetryObservationService observation) {
         this.orderRepository = orderRepository;
         this.taskRepository = taskRepository;
         this.droneRepository = droneRepository;
@@ -76,6 +79,7 @@ public class DashboardService {
         this.broadcaster = broadcaster;
         this.properties = properties;
         this.windField = windField;
+        this.observation = observation;
     }
 
     /**
@@ -155,12 +159,24 @@ public class DashboardService {
     /** 全部无人机的一帧快照（地图打点用）。 */
     @Transactional(readOnly = true)
     public List<DashboardDtos.DroneFrame> droneFrames() {
-        // join fetch 机型：避免每一帧都触发一次 model 懒加载
-        return buildFrames(droneRepository.findAllWithModel());
+        SimulationRun run = runRepository.findFirstByStatusOrderByIdDesc(RunStatus.RUNNING).orElse(null);
+        double simTime = run == null || run.getSimTimeS() == null ? 0 : run.getSimTimeS().doubleValue();
+        long step = run == null || run.getTickCount() == null ? 0 : run.getTickCount();
+        return buildFrames(droneRepository.findAllWithModel(), simTime, step);
     }
 
-    /** 由给定无人机集合构建遥测帧。 */
+    /** 由给定无人机集合构建遥测帧（无观测噪声，供内部/测试使用）。 */
     public List<DashboardDtos.DroneFrame> buildFrames(List<Drone> drones) {
+        return buildFrames(drones, 0, 0);
+    }
+
+    /**
+     * 由给定无人机集合构建"观测帧"。
+     *
+     * <p>物理/冲突检测使用 {@code drone} 表里的真值；这里输出的是遥测观测值：
+     * 带测量噪声、上一拍延迟与偶发丢包。丢包的飞机这一帧直接缺席，前端保持上一次位置。
+     */
+    public List<DashboardDtos.DroneFrame> buildFrames(List<Drone> drones, double simTimeS, long step) {
         // 只按当前任务 id 批量取任务/订单，而不是把全表读进内存。
         // 仿真一拍调用一次，订单/任务累积后这个差别是数量级的。
         java.util.Set<Long> taskIds = drones.stream()
@@ -183,6 +199,11 @@ public class DashboardService {
         List<DashboardDtos.DroneFrame> frames = new ArrayList<>(drones.size());
         Instant now = Instant.now();
         for (Drone drone : drones) {
+            TelemetryObservationService.Observation observed =
+                    observation.observeForFrame(drone, simTimeS, step);
+            if (observed == null) {
+                continue;   // 丢包/通信中断：本帧缺席，前端保持上一位置
+            }
             DispatchTask task = drone.getCurrentTaskId() == null ? null : tasks.get(drone.getCurrentTaskId());
             DeliveryOrder order = task == null ? null : orders.get(task.getOrderId());
             frames.add(new DashboardDtos.DroneFrame(
@@ -190,12 +211,19 @@ public class DashboardService {
                     task == null ? null : task.getId(),
                     order == null ? null : order.getOrderNo(),
                     drone.getStatus(),
-                    drone.getCurrentLat(), drone.getCurrentLon(),
-                    drone.getAltitudeM(), drone.getSpeedMps(), drone.getHeadingDeg(),
-                    drone.getBatteryPct(),
+                    observed.lat(), observed.lon(),
+                    BigDecimal.valueOf(observed.altitudeM()).setScale(2, RoundingMode.HALF_UP),
+                    BigDecimal.valueOf(observed.speedMps()).setScale(2, RoundingMode.HALF_UP),
+                    BigDecimal.valueOf(observed.headingDeg()).setScale(2, RoundingMode.HALF_UP),
+                    BigDecimal.valueOf(observed.batteryPct()).setScale(2, RoundingMode.HALF_UP),
                     task == null ? null : task.getProgressPct(),
                     task == null ? null : task.getCurrentWaypointSeq(),
-                    drone.getLastHeartbeatAt() == null ? now : drone.getLastHeartbeatAt()));
+                    observed.observedAt(),
+                    observed.delayed(),
+                    observed.stale(),
+                    observed.commLost(),
+                    observed.gpsDrift(),
+                    observed.observedAt()));
         }
         return frames;
     }

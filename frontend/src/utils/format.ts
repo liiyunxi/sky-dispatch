@@ -206,6 +206,7 @@ export const ZONE_TYPE_TEXT: Record<ZoneType, string> = {
   CORRIDOR: '航路走廊',
   WARNING: '警示区',
   BUILDING: '建筑障碍',
+  TERRAIN: '地形障碍',
 }
 
 export const ZONE_TYPE_COLOR: Record<ZoneType, TagColor> = {
@@ -214,6 +215,7 @@ export const ZONE_TYPE_COLOR: Record<ZoneType, TagColor> = {
   CORRIDOR: 'green',
   WARNING: 'gold',
   BUILDING: 'purple',
+  TERRAIN: 'volcano',
 }
 
 export const CONFLICT_TYPE_TEXT: Record<ConflictType, string> = {
@@ -259,6 +261,11 @@ export const EVENT_TYPE_TEXT: Record<string, string> = {
   DRONE_RELAY_DIVERTED: '自主改航补能',
   DRONE_RELAY_ARRIVED: '抵达充电站',
   DRONE_RELAY_RESUMED: '补能完成续飞',
+  GROUND_HOLD: '地面等待',
+  FAULT_BATTERY_DROP: '电池异常压降',
+  FAULT_POWER_LOSS: '动力系统失效',
+  FAULT_COMM_LOSS: '通信中断',
+  FAULT_GPS_DRIFT: 'GPS 定位漂移',
 }
 
 export function eventTypeText(type: string): string {

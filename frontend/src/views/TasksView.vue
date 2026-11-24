@@ -379,6 +379,12 @@ const detailOpen = ref(false)
 const detailLoading = ref(false)
 const currentTask = ref<DispatchTask | null>(null)
 const waypoints = ref<Waypoint[]>([])
+
+/** 计划去程 ETA：取最后一个航路点的累计 ETA（与任务预计耗时同一口径）。 */
+const plannedEtaSeconds = computed(() => {
+  if (!waypoints.value.length) return null
+  return Math.max(...waypoints.value.map((w) => Number(w.etaSeconds ?? 0)))
+})
 const events = ref<EventLogItem[]>([])
 const exporting = ref<'telemetry' | 'events' | ''>('')
 const detailTab = ref<'events' | 'waypoints' | 'params'>('events')
@@ -742,6 +748,13 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <!-- 地面等待：战略时隙/机巢周转时，明确告诉用户"在等什么、等到什么时候" -->
+          <div v-if="task.status === 'ASSIGNED' && task.holdReason" class="ground-hold-strip text-mono">
+            <span class="hold-dot" />
+            地面等待：{{ task.holdReason }}
+            <span v-if="task.holdUntilS != null">（至 {{ Number(task.holdUntilS).toFixed(0) }}s）</span>
+          </div>
+
           <!-- 实时遥测条 -->
           <div v-if="liveOf(task)" class="live-strip text-mono">
             <span><ThunderboltOutlined /> 电量 {{ Number(liveOf(task)?.batteryPct ?? 0).toFixed(0) }}%</span>
@@ -1072,10 +1085,21 @@ onUnmounted(() => {
                 <a-descriptions-item label="派单策略">{{ strategyText(currentTask.strategy) }}</a-descriptions-item>
                 <a-descriptions-item label="航路 ID">{{ currentTask.routeId ?? '—' }}</a-descriptions-item>
                 <a-descriptions-item label="当前航路点">{{ currentTask.currentWaypointSeq ?? '—' }}</a-descriptions-item>
+                <a-descriptions-item v-if="currentTask.holdReason" label="地面等待">
+                  {{ currentTask.holdReason }}
+                  <span v-if="currentTask.holdUntilS != null">
+                    （至 {{ Number(currentTask.holdUntilS).toFixed(0) }}s）
+                  </span>
+                </a-descriptions-item>
                 <a-descriptions-item label="派发时间">{{ formatDateTime(currentTask.assignedAt) }}</a-descriptions-item>
                 <a-descriptions-item label="起飞时间">{{ formatDateTime(currentTask.startedAt) }}</a-descriptions-item>
                 <a-descriptions-item label="结束时间">{{ formatDateTime(currentTask.finishedAt) }}</a-descriptions-item>
-                <a-descriptions-item label="执行耗时">{{ formatDuration(currentTask.durationS) }}</a-descriptions-item>
+                <a-descriptions-item label="计划去程 ETA">
+                  {{ plannedEtaSeconds == null ? '—' : formatDuration(plannedEtaSeconds) }}
+                </a-descriptions-item>
+                <a-descriptions-item label="执行耗时（含返航）">
+                  {{ formatDuration(currentTask.durationS) }}
+                </a-descriptions-item>
                 <a-descriptions-item label="失败原因" :span="2">
                   {{ currentTask.failReason ?? '—' }}
                 </a-descriptions-item>
@@ -1687,6 +1711,27 @@ onUnmounted(() => {
   line-height: 7px;
   color: #9ff0ff;
   background: #0a1a2b;
+}
+
+/* 地面等待（战略时隙/机巢周转） */
+.ground-hold-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  padding: 5px 8px;
+  font-size: 10px;
+  color: #ffd591;
+  border: 1px solid rgba(250, 173, 20, 0.34);
+  background: rgba(250, 173, 20, 0.08);
+}
+
+.hold-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #faad14;
+  box-shadow: 0 0 6px rgba(250, 173, 20, 0.8);
 }
 
 /* 实时遥测 */

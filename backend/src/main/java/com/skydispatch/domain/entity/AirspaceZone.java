@@ -101,6 +101,19 @@ public class AirspaceZone {
     @Column(name = "effective_to")
     private Instant effectiveTo;
 
+    /**
+     * 生效起始仿真时刻（秒）；为空表示从仿真开始即生效。
+     *
+     * <p>与 {@code effectiveFrom/To}（真实时钟）并行：仿真里的临时管制需要按
+     * <b>仿真时间</b>开关，否则 8 倍速下窗口会被压缩得毫无意义。
+     */
+    @Column(name = "active_from_sim_sec")
+    private Long activeFromSimSec;
+
+    /** 生效结束仿真时刻（秒）；为空表示不自动关闭。 */
+    @Column(name = "active_to_sim_sec")
+    private Long activeToSimSec;
+
     /** 是否启用；停用而不删除，保留历史冲突引用。 */
     @Column(name = "enabled", nullable = false)
     private Boolean enabled;

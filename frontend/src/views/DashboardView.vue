@@ -51,7 +51,7 @@ const dispatchResultOpen = ref(false)
 const dispatchResults = ref<DispatchResult[]>([])
 const dispatchPendingCount = computed(() => kpi.value?.pendingOrders ?? 0)
 
-let routeTimer: number | null = null
+let infraTimer: number | null = null
 let conflictTimer: number | null = null
 let runTimer: number | null = null
 let orderPinTimer: number | null = null
@@ -112,6 +112,7 @@ async function handleRefreshAll() {
       telemetry.refreshSnapshot(),
       telemetry.loadRoutes(),
       telemetry.loadZones(),
+      telemetry.loadStations(),
       telemetry.refreshRun(),
       telemetry.probeAlgorithm(),
     ])
@@ -125,23 +126,56 @@ async function handleRefreshAll() {
 
 onMounted(async () => {
   if (zones.value.length === 0) await telemetry.loadZones()
-  // 充电站是低频台账，进页面拉一次即可（地图上标出"中途能落哪儿"）
+  // 充电站是低频台账，但桩位占用/排队是运行态：低频轮询即可反映"哪里在排队"
   if (stations.value.length === 0) void telemetry.loadStations()
   await Promise.all([telemetry.loadRoutes(), telemetry.refreshRun()])
-
-  routeTimer = window.setInterval(() => void telemetry.loadRoutes(), 15_000)
-  conflictTimer = window.setInterval(() => void telemetry.loadConflicts(), 30_000)
-  runTimer = window.setInterval(() => void telemetry.refreshRun(), 10_000)
-  // 订单的取货点 / 目的地标记不随每秒遥测推送，低频刷新快照即可反映"已送达变绿"
-  orderPinTimer = window.setInterval(() => void telemetry.refreshSnapshot(), 10_000)
+  startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
-  if (routeTimer !== null) window.clearInterval(routeTimer)
+  stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+})
+
+/**
+ * 轮询统一收口：航路与充电站合并到一个 20s 定时器，减少并发请求；
+ * 页面隐藏时全部暂停，避免后台标签页持续打后端。
+ */
+function startPolling() {
+  stopPolling()
+  infraTimer = window.setInterval(() => {
+    void telemetry.loadRoutes()
+    void telemetry.loadStations()
+  }, 20_000)
+  conflictTimer = window.setInterval(() => void telemetry.loadConflicts(), 30_000)
+  runTimer = window.setInterval(() => void telemetry.refreshRun(), 10_000)
+  // 订单取货/目的地标记不随每秒遥测推送，15s 刷新足够反映"已送达变绿"
+  orderPinTimer = window.setInterval(() => void telemetry.refreshSnapshot(), 15_000)
+}
+
+function stopPolling() {
+  if (infraTimer !== null) window.clearInterval(infraTimer)
   if (conflictTimer !== null) window.clearInterval(conflictTimer)
   if (runTimer !== null) window.clearInterval(runTimer)
   if (orderPinTimer !== null) window.clearInterval(orderPinTimer)
-})
+  infraTimer = null
+  conflictTimer = null
+  runTimer = null
+  orderPinTimer = null
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    stopPolling()
+    return
+  }
+  // 回到前台先补一次，再恢复定时轮询
+  void telemetry.loadRoutes()
+  void telemetry.loadStations()
+  void telemetry.refreshSnapshot()
+  startPolling()
+}
 </script>
 
 <template>

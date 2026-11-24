@@ -135,6 +135,19 @@ public class WindField {
     }
 
     /**
+     * 派单/ETA 使用的规划地速系数（逆风 &lt; 1、顺风 &gt; 1）。
+     *
+     * <p>与 {@link #planningEnergyFactor} 使用同一份平均风；区别是这里返回地速比例，
+     * 供飞行时间估算使用，保证"预计到达时间"与能耗模型同一口径。
+     */
+    public double planningGroundSpeedFactor(double cruiseSpeedMps, double trackBearingDeg, double altitudeM) {
+        if (!enabled() || cruiseSpeedMps <= 1e-6) {
+            return 1.0;
+        }
+        return adjust(planningVectorAt(altitudeM), cruiseSpeedMps, trackBearingDeg).groundSpeedFactor();
+    }
+
+    /**
      * 取某一仿真时刻、某一高度上的风矢量。
      *
      * @param simTimeSec 仿真时间（秒）

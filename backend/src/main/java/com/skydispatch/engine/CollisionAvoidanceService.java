@@ -140,7 +140,9 @@ public class CollisionAvoidanceService {
             return List.of();
         }
 
-        List<AlgorithmDtos.ObstacleSpec> obstacles = airspaceService.activeObstacleSpecs();
+        // 只取"当前仿真时刻"生效的障碍：临时管制区到点自动生效/解除
+        List<AlgorithmDtos.ObstacleSpec> obstacles =
+                airspaceService.activeObstacleSpecs(java.math.BigDecimal.valueOf(simTime));
         List<ConflictEvent> events = new ArrayList<>();
 
         // 1) 机-机：逐对预测，确定式地让 id 较大的飞机避让
@@ -281,7 +283,7 @@ public class CollisionAvoidanceService {
         DeliveryOrder order = orders.get(task.getOrderId());
         double payload = order == null ? 0 : order.getWeightKg().doubleValue();
         double speed = model.getCruiseSpeedMps().doubleValue();
-        double alt = routeService.waypoints(route.getId()).stream()
+        double alt = routeWaypoints.stream()
                 .map(w -> w.getAltitudeM() == null ? 80.0 : w.getAltitudeM().doubleValue())
                 .findFirst().orElse(80.0);
         double flown = task.getActualDistanceM() == null ? 0 : task.getActualDistanceM().doubleValue();

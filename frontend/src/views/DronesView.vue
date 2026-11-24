@@ -12,7 +12,7 @@ import {
   ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons-vue'
-import { airspaceApi, droneApi, taskApi } from '@/api'
+import { airspaceApi, droneApi, simulationApi, taskApi } from '@/api'
 import type {
   AirspaceZone,
   DispatchTask,
@@ -20,6 +20,7 @@ import type {
   DroneCreateRequest,
   DroneFrame,
   DroneStatus,
+  FaultType,
 } from '@/api'
 import DroneModel3D from '@/components/drone/DroneModel3D.vue'
 import DroneAnatomy from '@/components/drone/DroneAnatomy.vue'
@@ -76,6 +77,20 @@ const historyLoading = ref(false)
 const historyDrone = ref<Drone | null>(null)
 const historyTasks = ref<DispatchTask[]>([])
 
+/** 故障演练：指定无人机 + 故障类型，下一拍生效（后端 /simulation/fault） */
+const faultOpen = ref(false)
+const faultDrone = ref<Drone | null>(null)
+const faultType = ref<FaultType>('BATTERY_DROP')
+const faultDrop = ref(15)
+const injecting = ref(false)
+
+const FAULT_OPTIONS: Array<{ value: FaultType; label: string; desc: string }> = [
+  { value: 'BATTERY_DROP', label: '电池压降', desc: '瞬间掉电 1~50%，演示低电量返航/补能' },
+  { value: 'POWER_LOSS', label: '动力失效', desc: '任务立即失败，飞机转入维护' },
+  { value: 'COMM_LOSS', label: '通信中断', desc: '遥测中断一段时间后恢复' },
+  { value: 'GPS_DRIFT', label: '定位漂移', desc: '遥测位置误差增大，考验冲突判断' },
+]
+
 /** 筛选（全部在前端完成：机队规模小，且态势计数需要全量数据） */
 const statusFilter = ref<DroneStatus | undefined>(undefined)
 const modelFilter = ref<string | undefined>(undefined)
@@ -109,6 +124,16 @@ const liveById = computed(() => {
 
 function liveOf(drone: Drone): DroneFrame | undefined {
   return liveById.value.get(drone.id)
+}
+
+/** 遥测质量标签：丢包/失联/漂移要让用户看见，而不是让飞机"莫名停住"。 */
+function telemetryQualityOf(frame?: DroneFrame): { text: string; color: string } | null {
+  if (!frame) return null
+  if (frame.commLost) return { text: '遥测失联', color: 'red' }
+  if (frame.stale) return { text: '遥测丢包', color: 'orange' }
+  if (frame.gpsDrift) return { text: '定位漂移', color: 'purple' }
+  // 常规的 1 拍延迟是设计使然，不作为异常标签刷屏
+  return null
 }
 
 /** 状态以实时遥测为准（仿真每拍都会推），掉线时退回台账 */
@@ -654,6 +679,41 @@ function openModel3d(drone: Drone): void {
   model3dOpen.value = true
 }
 
+/** 只有真正在执行任务的飞机才允许注入"飞行故障"（后端也会再校验一次） */
+function canInjectFault(drone: Drone): boolean {
+  return ['ASSIGNED', 'IN_FLIGHT', 'RETURNING'].includes(effectiveStatus(drone))
+}
+
+function openFault(drone: Drone): void {
+  if (!canInjectFault(drone)) {
+    message.info('该机当前没有执行中的飞行任务，无法注入飞行故障')
+    return
+  }
+  faultDrone.value = drone
+  faultType.value = 'BATTERY_DROP'
+  faultDrop.value = 15
+  faultOpen.value = true
+}
+
+async function submitFault(): Promise<void> {
+  const drone = faultDrone.value
+  if (!drone) return
+  injecting.value = true
+  try {
+    const result = await simulationApi.injectFault({
+      droneId: drone.id,
+      type: faultType.value,
+      batteryDropPct: faultType.value === 'BATTERY_DROP' ? faultDrop.value : undefined,
+    })
+    message.success(result.message)
+    faultOpen.value = false
+  } catch {
+    /* 已提示；保持弹窗便于调整 */
+  } finally {
+    injecting.value = false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 任务履历
 // ---------------------------------------------------------------------------
@@ -1025,6 +1085,12 @@ function homeDistanceText(drone: Drone): string {
               <a-tag :color="DRONE_STATUS_COLOR[effectiveStatus(drone)]">
                 {{ DRONE_STATUS_TEXT[effectiveStatus(drone)] ?? effectiveStatus(drone) }}
               </a-tag>
+              <a-tag
+                v-if="telemetryQualityOf(liveOf(drone))"
+                :color="telemetryQualityOf(liveOf(drone))!.color"
+              >
+                {{ telemetryQualityOf(liveOf(drone))!.text }}
+              </a-tag>
             </div>
           </header>
 
@@ -1122,6 +1188,18 @@ function homeDistanceText(drone: Drone): string {
               <template #icon><AimOutlined /></template>
               整机解析
             </a-button>
+            <a-tooltip
+              :title="
+                canInjectFault(drone)
+                  ? '下一拍注入一次指定故障，便于演示精确复现'
+                  : '仅执行中的无人机可注入飞行故障'
+              "
+            >
+              <a-button size="small" :disabled="!canInjectFault(drone)" @click.stop="openFault(drone)">
+                <template #icon><WarningOutlined /></template>
+                故障演练
+              </a-button>
+            </a-tooltip>
             <a-popconfirm
               title="确认变更该无人机状态？变更后会立即生效。"
               ok-text="确认变更"
@@ -1372,6 +1450,50 @@ function homeDistanceText(drone: Drone): string {
           />
         </a-tab-pane>
       </a-tabs>
+    </a-modal>
+
+    <!-- ------------------------------ 故障演练 ------------------------------ -->
+    <a-modal
+      v-model:open="faultOpen"
+      :title="`故障演练 · ${faultDrone?.code ?? ''}`"
+      ok-text="注入故障"
+      cancel-text="取消"
+      :confirm-loading="injecting"
+      @ok="submitFault"
+    >
+      <a-alert
+        type="warning"
+        show-icon
+        class="mb-16"
+        message="故障将在下一拍生效"
+        description="用于演示时精确复现电池压降、动力失效、通信中断与定位漂移；动力失效会直接中止当前任务并把飞机转入维护。"
+      />
+
+      <div v-if="faultDrone" class="fault-drone text-mono">
+        {{ faultDrone.code }} · {{ faultDrone.modelCode }} · 当前状态
+        {{ DRONE_STATUS_TEXT[effectiveStatus(faultDrone)] }} · 电量
+        {{ effectiveBattery(faultDrone).toFixed(0) }}%
+      </div>
+
+      <div class="fault-options">
+        <button
+          v-for="option in FAULT_OPTIONS"
+          :key="option.value"
+          type="button"
+          class="fault-option"
+          :class="{ active: faultType === option.value }"
+          @click="faultType = option.value"
+        >
+          <span class="fault-name">{{ option.label }}</span>
+          <span class="fault-desc">{{ option.desc }}</span>
+        </button>
+      </div>
+
+      <a-form v-if="faultType === 'BATTERY_DROP'" layout="vertical" class="fault-drop">
+        <a-form-item label="压降幅度（%）">
+          <a-input-number v-model:value="faultDrop" :min="1" :max="50" :step="1" style="width: 100%" />
+        </a-form-item>
+      </a-form>
     </a-modal>
   </div>
 </template>
@@ -2561,6 +2683,67 @@ function homeDistanceText(drone: Drone): string {
 
 .model3d-alert {
   border-radius: 8px;
+}
+
+/* ---------------- 故障演练 ---------------- */
+.fault-drone {
+  padding: 6px 9px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: #9ff0ff;
+  border: 1px solid rgba(56, 232, 255, 0.16);
+  background: rgba(56, 232, 255, 0.05);
+}
+
+.fault-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.fault-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  text-align: left;
+  cursor: pointer;
+  color: rgba(216, 240, 255, 0.82);
+  border: 1px solid rgba(56, 232, 255, 0.14);
+  background: rgba(8, 21, 35, 0.55);
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.fault-option:hover {
+  border-color: rgba(56, 232, 255, 0.4);
+}
+
+.fault-option.active {
+  border-color: #f0a93b;
+  background: rgba(240, 169, 59, 0.08);
+  box-shadow: inset 0 0 16px rgba(240, 169, 59, 0.08);
+}
+
+.fault-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fault-desc {
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgba(150, 199, 232, 0.55);
+}
+
+.fault-drop {
+  margin-top: 2px;
+}
+
+@media (max-width: 520px) {
+  .fault-options {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1000px) {

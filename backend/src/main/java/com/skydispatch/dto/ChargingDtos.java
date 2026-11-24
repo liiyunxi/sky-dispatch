@@ -22,10 +22,18 @@ public final class ChargingDtos {
             Double lat,
             Double lon,
             Integer chargeSlots,
+            /** 当前正在充电的无人机数（运行态）。 */
+            Integer occupancy,
+            /** 当前排队等待的无人机数（运行态）。 */
+            Integer queueLength,
             Boolean enabled,
             String remark
     ) {
         public static Station from(ChargingStation station) {
+            return from(station, 0, 0);
+        }
+
+        public static Station from(ChargingStation station, int occupancy, int queueLength) {
             return new Station(
                     station.getId(),
                     station.getCode(),
@@ -34,6 +42,8 @@ public final class ChargingDtos {
                     station.getLat(),
                     station.getLon(),
                     station.getChargeSlots(),
+                    occupancy,
+                    queueLength,
                     station.getEnabled(),
                     station.getRemark());
         }

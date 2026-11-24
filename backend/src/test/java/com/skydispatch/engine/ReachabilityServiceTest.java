@@ -155,10 +155,17 @@ class ReachabilityServiceTest {
                         false, 0.25, 98, 60, false, 3, 2, 60),
                 new SkyProperties.Dispatch("NEAREST_AVAILABLE", 10000, 25,
                         1.0, 0.5, 0.3, true, 90, 1.15),
-                new SkyProperties.Flight(80, 50, 30, 4, 3, 80),
+                new SkyProperties.Flight(80, 50, 30, 4, 3, 80,
+                        List.of(62.0, 80.0, 98.0, 116.0)),
                 new SkyProperties.Energy(1.5, 2.5, 0.30, 60.0),
                 wind,
                 new SkyProperties.Bootstrap(true),
-                new SkyProperties.Auth(false, "admin", "test", "test-secret", 60));
+                new SkyProperties.Auth(false, "admin", "test", "test-secret", 60),
+                new SkyProperties.Dynamics(2.5, 0.9, 120.0, 0.5, 2.0, 1.5),
+                new SkyProperties.Charging(80, 0.35),
+                new SkyProperties.Vertiport(4, 45, 15),
+                new SkyProperties.Strategic(true, 15, 2),
+                new SkyProperties.Fault(false, 0.004, 0.0002, 0.002, 0.002, 20, 15),
+                new SkyProperties.Telemetry(true, 3.0, 0.8, 0.015, 1, 0.5));
     }
 }

@@ -51,6 +51,7 @@ public class SimulationEngine {
     private final DispatchBatchService dispatchBatchService;
     private final ConflictService conflictService;
     private final DemoOrderFountain orderFountain;
+    private final SimulationMetrics metrics;
 
     /** 正在推进标志：true 表示上一拍还没结束。 */
     private final AtomicBoolean ticking = new AtomicBoolean(false);
@@ -63,7 +64,8 @@ public class SimulationEngine {
                             DashboardService dashboardService,
                             DispatchBatchService dispatchBatchService,
                             ConflictService conflictService,
-                            DemoOrderFountain orderFountain) {
+                            DemoOrderFountain orderFountain,
+                            SimulationMetrics metrics) {
         this.properties = properties;
         this.simulationService = simulationService;
         this.tickService = tickService;
@@ -73,6 +75,7 @@ public class SimulationEngine {
         this.dispatchBatchService = dispatchBatchService;
         this.conflictService = conflictService;
         this.orderFountain = orderFountain;
+        this.metrics = metrics;
     }
 
     /** 定时推进。应用启动后立即开始跑（fixedDelay 从第一次执行后开始计时）。 */
@@ -113,7 +116,15 @@ public class SimulationEngine {
                 return new SimulationDtos.TickResult(0, BigDecimal.ZERO, 0, 0, 0,
                         "当前没有可推进的仿真运行，请先点击「继续仿真」或「新建运行」");
             }
+            long tickStartNanos = System.nanoTime();
             TickOutcome outcome = tickService.tick(run);
+            long tickMs = (System.nanoTime() - tickStartNanos) / 1_000_000L;
+            metrics.record(tickMs);
+            if (tickMs >= 150) {
+                // 慢拍告警：正常情况下单拍应在几十毫秒内；持续偏高通常是查询放大或锁竞争
+                log.warn("[仿真] 单拍耗时 {}ms（第 {} 拍，{} 架在飞），请检查查询/锁竞争",
+                        tickMs, outcome.stepIndex(), outcome.movedDrones());
+            }
             publish(outcome);
             // Python 冲突检测放在 tick 事务提交之后：HTTP 最长 10s，
             // 不能让外部调用占着仿真事务和数据库连接。
@@ -218,7 +229,7 @@ public class SimulationEngine {
             return;
         }
         try {
-            orderFountain.replenishIfNeeded();
+            orderFountain.replenishIfNeeded(outcome.simTimeS());
         } catch (Exception e) {
             log.warn("演示订单补给失败（不影响仿真推进）: {}", e.getMessage());
         }

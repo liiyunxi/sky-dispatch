@@ -275,7 +275,42 @@ public class DemoDataSeeder implements ApplicationRunner {
                         .polygonWkt("POLYGON((104.0800 30.5860, 104.0900 30.5860, 104.0900 30.5940, 104.0800 30.5940, 104.0800 30.5860))")
                         .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("160"))
                         .severity(ConflictSeverity.HIGH).enabled(true)
-                        .remark("160m 以下禁止穿越，高新楼群").build()));
+                        .remark("160m 以下禁止穿越，高新楼群").build(),
+
+                // ---- 地形障碍（山体）：底部贴地、顶部为山高，低空必须绕行或爬升到山顶以上 ----
+                AirspaceZone.builder().code("Z-TRN-001").name("佘山山体")
+                        .zoneType(ZoneType.TERRAIN).shapeType(ZoneShape.CIRCLE)
+                        .centerLat(31.0960).centerLon(121.1900).radiusM(new BigDecimal("1500"))
+                        .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("60"))
+                        .severity(ConflictSeverity.HIGH).enabled(true)
+                        .remark("山体顶高 60m，以下不可穿越").build(),
+                AirspaceZone.builder().code("Z-TRN-101").name("西山山体")
+                        .zoneType(ZoneType.TERRAIN).shapeType(ZoneShape.CIRCLE)
+                        .centerLat(39.9900).centerLon(116.1900).radiusM(new BigDecimal("1800"))
+                        .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("80"))
+                        .severity(ConflictSeverity.HIGH).enabled(true)
+                        .remark("山体顶高 80m，以下不可穿越").build(),
+                AirspaceZone.builder().code("Z-TRN-201").name("梧桐山山体")
+                        .zoneType(ZoneType.TERRAIN).shapeType(ZoneShape.CIRCLE)
+                        .centerLat(22.5800).centerLon(114.2100).radiusM(new BigDecimal("2000"))
+                        .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("90"))
+                        .severity(ConflictSeverity.HIGH).enabled(true)
+                        .remark("山体顶高 90m，以下不可穿越").build(),
+                AirspaceZone.builder().code("Z-TRN-301").name("龙泉山山体")
+                        .zoneType(ZoneType.TERRAIN).shapeType(ZoneShape.CIRCLE)
+                        .centerLat(30.5500).centerLon(104.2800).radiusM(new BigDecimal("1800"))
+                        .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("70"))
+                        .severity(ConflictSeverity.HIGH).enabled(true)
+                        .remark("山体顶高 70m，以下不可穿越").build(),
+
+                // ---- 临时管制：带仿真时间窗，到点自动生效/解除 ----
+                AirspaceZone.builder().code("Z-TMP-001").name("虹桥临时管制区")
+                        .zoneType(ZoneType.RESTRICTED).shapeType(ZoneShape.CIRCLE)
+                        .centerLat(31.2050).centerLon(121.3350).radiusM(new BigDecimal("900"))
+                        .minAltitudeM(BigDecimal.ZERO).maxAltitudeM(new BigDecimal("120"))
+                        .severity(ConflictSeverity.HIGH).enabled(true)
+                        .activeFromSimSec(1800L).activeToSimSec(2700L)
+                        .remark("仿真 1800~2700s 临时管制（时间窗）").build()));
     }
 
     /**

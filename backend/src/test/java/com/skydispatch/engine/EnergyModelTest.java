@@ -145,6 +145,14 @@ class EnergyModelTest {
     }
 
     @Test
+    @DisplayName("瞬时功率（积分用）：悬停=诱导功率，巡航=参数表额定功率")
+    void instantPower() {
+        assertThat(energyModel.instantPowerW(model, 0, 0)).isCloseTo(900.0, within(1e-6));
+        assertThat(energyModel.instantPowerW(model, 15, 0)).isCloseTo(2268.0, within(1e-6));
+        assertThat(energyModel.instantPowerW(model, 15, 5)).isGreaterThan(2268.0);
+    }
+
+    @Test
     @DisplayName("悬停能耗随载重上升：载 5kg 时 24.85Wh（旧模型恒为 15Wh）")
     void hoverEnergyWithPayload() {
         // 900 × 1.4^1.5 = 1490.85W → ×60/3600 = 24.8475Wh
@@ -257,11 +265,18 @@ class EnergyModelTest {
                         false, 0.25, 98, 60, false, 3, 2, 60),
                 new SkyProperties.Dispatch("NEAREST_AVAILABLE", 10000, 25,
                         1.0, 0.5, 0.3, false, 90, 1.15),
-                new SkyProperties.Flight(80, 50, 30, 4, 3, 80),
+                new SkyProperties.Flight(80, 50, 30, 4, 3, 80,
+                        java.util.List.of(62.0, 80.0, 98.0, 116.0)),
                 ENERGY,
                 new SkyProperties.Wind(false, 225, 2.5, 10, 0.14, 0.3, 41, 6, 0.55, 0.6, 2.2,
                         false, 1.05),
                 new SkyProperties.Bootstrap(false),
-                new SkyProperties.Auth(false, "admin", "test", "test-secret", 60));
+                new SkyProperties.Auth(false, "admin", "test", "test-secret", 60),
+                new SkyProperties.Dynamics(2.5, 0.9, 120.0, 0.5, 2.0, 1.5),
+                new SkyProperties.Charging(80, 0.35),
+                new SkyProperties.Vertiport(4, 45, 15),
+                new SkyProperties.Strategic(true, 15, 2),
+                new SkyProperties.Fault(false, 0.004, 0.0002, 0.002, 0.002, 20, 15),
+                new SkyProperties.Telemetry(true, 3.0, 0.8, 0.015, 1, 0.5));
     }
 }

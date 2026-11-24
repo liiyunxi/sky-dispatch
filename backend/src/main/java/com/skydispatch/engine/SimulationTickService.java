@@ -1,7 +1,6 @@
 package com.skydispatch.engine;
 
 import com.skydispatch.common.GeoPoint;
-import com.skydispatch.common.GeoUtils;
 import com.skydispatch.config.SkyProperties;
 import com.skydispatch.domain.entity.ConflictEvent;
 import com.skydispatch.domain.entity.DeliveryOrder;
@@ -58,11 +57,12 @@ import java.util.stream.Collectors;
  *                    COMPLETED ◀──回到机巢── RETURNING
  * </pre>
  *
- * <p><b>位置推进</b>用航路折线做参数化：已知"已飞距离"，就能求出当前位置
- * （{@link GeoUtils#pointAtDistance}）。这比逐点跳变平滑，也让进度百分比连续可算。
+ * <p><b>位置推进</b>交给 {@link FlightDynamics}：每拍把无人机当作带惯性的质点，
+ * 由"速度指令 → 加速度受限 → 速度与位置积分"得到新位置（不是沿航路按距离插值）。
+ * 已飞距离只用于进度百分比，由位置投影回航路得到。
  *
- * <p><b>电量消耗</b>按本拍实际飞过的距离扣减（而不是一次扣完），
- * 这样看板上的电量曲线是斜的，能直观看出不同机型的能耗差异。
+ * <p><b>电量消耗</b>按本拍真实空速的功率积分扣减（而不是一次扣完或按固定每公里），
+ * 这样看板上的电量曲线是斜的，爬升、逆风、载重的影响都能看出来。
  */
 @Service
 public class SimulationTickService {
@@ -73,18 +73,6 @@ public class SimulationTickService {
     private static final List<TaskStatus> ACTIVE_STATUSES = List.of(
             TaskStatus.ASSIGNED, TaskStatus.TAKEOFF, TaskStatus.CRUISING,
             TaskStatus.DELIVERING, TaskStatus.RETURNING, TaskStatus.CHARGING);
-
-    /** 判定"到达"的距离容差（米），避免因浮点误差永远差一点点。 */
-    private static final double ARRIVAL_TOLERANCE_M = 0.5;
-
-    /**
-     * 速度剖面的最小系数：起降瞬间速度会掉到巡航速度的这个比例。
-     *
-     * <p>为什么不能真的从 0 起步？因为推进量 = 速度 × 时间，速度一旦为 0，
-     * 这一拍就前进不了、下一拍还是 0，飞机永远起飞不了。真实多旋翼起飞后
-     * 会很快建立前进速度，用一个 30% 的地板既符合直觉又不会自锁。
-     */
-    private static final double MIN_SPEED_FACTOR = 0.30;
 
     /** 已发过低电量预警的无人机 id，防止每个 tick 重复报警。 */
     private final java.util.Set<Long> lowBatteryWarned = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -106,7 +94,13 @@ public class SimulationTickService {
     private final CollisionAvoidanceService collisionAvoidance;
     private final RerouteRegistry rerouteRegistry;
     private final BatteryRelayService batteryRelay;
-    private final WindField windField;
+    private final FlightDynamics flightDynamics;
+    private final ChargingStationRegistry chargingRegistry;
+    private final VertiportService vertiports;
+    private final StrategicDeconflictionService strategic;
+    private final FaultInjectionService faultInjection;
+    /** 已提示过"地面等待"的任务，避免每拍刷事件。 */
+    private final java.util.Set<Long> groundHoldNotified = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public SimulationTickService(SimulationService simulationService,
                                  DispatchTaskRepository taskRepository,
@@ -125,7 +119,11 @@ public class SimulationTickService {
                                  CollisionAvoidanceService collisionAvoidance,
                                  RerouteRegistry rerouteRegistry,
                                  BatteryRelayService batteryRelay,
-                                 WindField windField) {
+                                 FlightDynamics flightDynamics,
+                                 ChargingStationRegistry chargingRegistry,
+                                 VertiportService vertiports,
+                                 StrategicDeconflictionService strategic,
+                                 FaultInjectionService faultInjection) {
         this.simulationService = simulationService;
         this.taskRepository = taskRepository;
         this.droneRepository = droneRepository;
@@ -143,7 +141,11 @@ public class SimulationTickService {
         this.collisionAvoidance = collisionAvoidance;
         this.rerouteRegistry = rerouteRegistry;
         this.batteryRelay = batteryRelay;
-        this.windField = windField;
+        this.flightDynamics = flightDynamics;
+        this.chargingRegistry = chargingRegistry;
+        this.vertiports = vertiports;
+        this.strategic = strategic;
+        this.faultInjection = faultInjection;
     }
 
     /**
@@ -182,7 +184,8 @@ public class SimulationTickService {
             }
 
             // 停在充电站补能的飞机：这一拍不推进航路，只把电量充上去。
-            // 充满后它会自己把航路重建到"接下来那一段"的终点，下一拍继续飞。
+            // 桩位满时进入排队——排队是"落地等待"，不再按悬停耗电，
+            // 否则排队越久电量越低，反而永远轮不到充电。
             if (task.getStatus() == TaskStatus.CHARGING) {
                 batteryRelay.advanceCharging(task, drone, delta, simTime, run.getId());
                 continue;
@@ -196,6 +199,29 @@ public class SimulationTickService {
             }
             DeliveryOrder order = orders.get(task.getOrderId());
             double payloadKg = order == null ? 0 : order.getWeightKg().doubleValue();
+
+            // 故障注入：电池异常压降 / 动力失效 / 通信中断 / GPS 漂移。
+            // 通信与定位故障只影响遥测观测，不改变飞控真值；动力失效则任务终止。
+            FaultInjectionService.Fault fault = faultInjection.maybeInject(
+                    drone, delta, simTime.doubleValue(), run.getId());
+            if (fault.present()) {
+                eventService.simulation("FAULT_" + fault.type().name(), fault.message(), run.getId(), simTime);
+                log.warn(fault.message());
+            }
+            if (fault.fatal()) {
+                failTask(task, drone, "动力系统故障，紧急迫降", simTime, run.getId());
+                // 动力故障的飞机不能马上再派单：转入维护，等机队补能/检修流程恢复
+                drone.setStatus(DroneStatus.MAINTENANCE);
+                droneRepository.save(drone);
+                continue;
+            }
+            if (fault.batteryDropPct() > 0) {
+                BigDecimal left = drone.getBatteryPct()
+                        .subtract(BigDecimal.valueOf(fault.batteryDropPct()))
+                        .max(BigDecimal.ZERO);
+                drone.setBatteryPct(left.setScale(2, RoundingMode.HALF_UP));
+                droneRepository.save(drone);
+            }
 
             // 电量安全底线：低于配置的冗余值就中止，真实系统里这叫"强制返航"。
             // 例外：正在自主补能途中（已选好站点、这点电够飞过去）不中止 ——
@@ -238,7 +264,8 @@ public class SimulationTickService {
         rechargeService.recharge(delta);
 
         // 4) 生成遥测帧（事务内取数据，事务外广播）；join fetch 机型，避免逐架懒加载
-        List<DashboardDtos.DroneFrame> frames = dashboardService.buildFrames(droneRepository.findAllWithModel());
+        List<DashboardDtos.DroneFrame> frames = dashboardService.buildFrames(
+                droneRepository.findAllWithModel(), simTime.doubleValue(), step);
 
         return new TickOutcome(simTime, step, frames, moved, completed, newConflicts);
     }
@@ -314,7 +341,6 @@ public class SimulationTickService {
             failTask(task, drone, "航路长度为 0", simTime, runId);
             return false;
         }
-        double cruiseSpeed = model.getCruiseSpeedMps().doubleValue();
         double flown = task.getActualDistanceM() == null ? 0 : task.getActualDistanceM().doubleValue();
 
         List<GeoPoint> outbound = routeWaypoints.stream()
@@ -328,16 +354,34 @@ public class SimulationTickService {
         Collections.reverse(inbound);
         List<FlightWaypoint> waypoints = routeWaypoints;
 
-        // 飞行剖面：把「水平匀速直线」升级为「起飞加速 → 爬升 → 巡航 → 下降 → 减速降落」。
-        // 去程与回程长度相同（都是 routeDistance），所以两段共用同一个剖面参数。
-        LegProfile profile = buildLegProfile(
-                cruiseSpeed, cruiseAltitude(waypoints).doubleValue(), routeDistance);
+        // 巡航高度：爬升/下降也交给动力学积分（有垂直惯性），这里只取目标高度
+        double cruiseAltM = cruiseAltitude(waypoints).doubleValue();
+        double simTimeSec = simTime == null ? 0.0 : simTime.doubleValue();
 
-        // 起飞瞬间：扣一次起降悬停能耗，订单进入"配送中"
+        // 起飞瞬间：先过战略层时隙与机巢容量，再切到 TAKEOFF。
+        // 起降悬停不再一次性扣 15Wh，而是由动力学按真实空速/高度逐拍积分。
         if (task.getStatus() == TaskStatus.ASSIGNED) {
+            double releaseAt = strategic.requestSlot(task, drone, outbound, cruiseAltM, simTimeSec);
+            if (simTimeSec + 1e-6 < releaseAt) {
+                holdOnGround(task, releaseAt,
+                        String.format("战略层时隙：等待至 %.0fs（走廊/高度层冲突）", releaseAt),
+                        simTime, runId);
+                return false;
+            }
+            VertiportService.Decision takeoff = vertiports.requestTakeoff(drone, simTimeSec);
+            if (!takeoff.granted()) {
+                holdOnGround(task, takeoff.notBeforeSimSec(),
+                        String.format("机巢%s，最早 %.0fs 可起飞",
+                                takeoff.reason(), takeoff.notBeforeSimSec()),
+                        simTime, runId);
+                return false;
+            }
+            groundHoldNotified.remove(task.getId());
+            // 放行：清掉地面等待标记，任务卡不再显示"等待中"
+            task.setHoldUntilS(null);
+            task.setHoldReason(null);
             task.setStatus(TaskStatus.TAKEOFF);
             task.setStartedAt(Instant.now());
-            consume(drone, model, task, energyModel.hoverEnergyWh(model, payloadKg));
             // 同步无人机运行态：派单后一直是 ASSIGNED，起飞这一刻起进入飞行中，
             // 否则地图与机队表全程显示"已分配"，看不出飞机其实已经在飞
             drone.setStatus(DroneStatus.IN_FLIGHT);
@@ -361,14 +405,16 @@ public class SimulationTickService {
                             route.getId(), dropoff, home,
                             cruiseAltitude(waypoints).doubleValue());
                     task.setActualDistanceM(scale(0));
+                    // 航路已重建，本拍之后的"已飞距离"必须从新折线起点重新计，
+                    // 否则会沿用旧航路的里程，返航一开局就直接跳到终点。
+                    flown = 0;
                     outbound = List.of(dropoff, home);
-                    inbound = List.of(home, dropoff);
+                    inbound = List.of(dropoff, home);
                     // 航路点已重建，刷新本地引用；同步回共享 map，
                     // 保证本拍后续的碰撞检测用的是新航路而不是预加载时的旧航路
                     waypoints = routeService.waypoints(route.getId());
                     waypointsByRoute.put(route.getId(), waypoints);
-                    profile = buildLegProfile(cruiseSpeed,
-                            cruiseAltitude(waypoints).doubleValue(), routeDistance);
+                    cruiseAltM = cruiseAltitude(waypoints).doubleValue();
                 }
                 rerouteRegistry.clear(task.getId());
             }
@@ -382,35 +428,27 @@ public class SimulationTickService {
             double returnFlown = reroutedReturn
                     ? Math.max(0, flown)
                     : Math.max(0, flown - routeDistance);
-            double remain = routeDistance - returnFlown;
-            // 风修正：地速随逆风下降，能耗按空速上升
-            WindField.Adjustment wind = windAt(returnPath, returnFlown, profile.cruiseAltitude(),
-                    cruiseSpeed, simTime);
-            // rampSpeed 是"本拍的空速"（含起降加减速），legSpeed 是扣掉风之后的地速：
-            // 能耗看空速，位置推进看地速
-            double rampSpeed = profile.speedAt(returnFlown, remain);
-            double legSpeed = rampSpeed * wind.groundSpeedFactor();
-            double advance = Math.min(legSpeed * deltaSeconds, remain);
-            returnFlown += advance;
+
+            // 位置由动力学积分产生：加减速、爬升/下降、逆风漂移都在这里算出来
+            FlightDynamics.Motion motion = flightDynamics.advance(
+                    drone, model, returnPath, returnFlown, cruiseAltM, 0, deltaSeconds, simTimeSec);
+            returnFlown = motion.distanceM();
             flown = reroutedReturn ? returnFlown : routeDistance + returnFlown;
 
-            // 返航时已卸货，能耗按空载算
-            consume(drone, model, task,
-                    energyModel.cruiseEnergyWh(model, advance, 0, rampSpeed, wind.energyFactor()));
-
-            GeoPoint position = GeoUtils.pointAtDistance(returnPath, returnFlown);
-            double altitude = profile.altitudeAt(returnFlown, routeDistance - returnFlown);
-            updatePosition(drone, position, legSpeed, altitude, returnPath, wind.noseBearingDeg());
+            consume(drone, model, task, BigDecimal.valueOf(motion.energyWh()));
+            updatePosition(drone, motion);
             task.setActualDistanceM(scale(flown));
-            task.setCurrentWaypointSeq(seqAt(waypoints, returnFlown));
+            task.setCurrentWaypointSeq(seqAt(waypoints, Math.min(returnFlown, routeDistance)));
 
-            if (returnFlown >= routeDistance - ARRIVAL_TOLERANCE_M) {
+            if (motion.arrived()) {
                 // 这条"返航"航路的终点是充电站（自主补能改航）→ 落站补能，不当作任务完成
                 if (batteryRelay.isRelaying(task.getId())) {
+                    flightDynamics.clear(drone.getId());
                     batteryRelay.beginCharging(task, drone, simTime, runId);
                     return false;
                 }
                 rerouteRegistry.clear(task.getId());
+                flightDynamics.clear(drone.getId());
                 completeTask(task, drone, route, order, simTime, runId);
                 return true;
             }
@@ -423,34 +461,29 @@ public class SimulationTickService {
             eventService.taskStatusChanged(task, TaskStatus.CRUISING.name(), simTime, runId);
         }
 
-        double remain = routeDistance - flown;
-        // 风修正：逆风 → 地速下降、空速上升；顺风反之。侧风体现在机头偏转上
-        WindField.Adjustment wind = windAt(outbound, flown, profile.cruiseAltitude(), cruiseSpeed, simTime);
-        double rampSpeed = profile.speedAt(flown, remain);
-        double legSpeed = rampSpeed * wind.groundSpeedFactor();
-        double advance = Math.min(legSpeed * deltaSeconds, remain);
-        flown += advance;
-        consume(drone, model, task,
-                energyModel.cruiseEnergyWh(model, advance, payloadKg, rampSpeed, wind.energyFactor()));
+        FlightDynamics.Motion motion = flightDynamics.advance(
+                drone, model, outbound, flown, cruiseAltM, payloadKg, deltaSeconds, simTimeSec);
+        flown = motion.distanceM();
 
-        GeoPoint position = GeoUtils.pointAtDistance(outbound, flown);
-        double altitude = profile.altitudeAt(flown, routeDistance - flown);
-        updatePosition(drone, position, legSpeed, altitude, outbound, wind.noseBearingDeg());
+        consume(drone, model, task, BigDecimal.valueOf(motion.energyWh()));
+        updatePosition(drone, motion);
         task.setActualDistanceM(scale(flown));
         task.setCurrentWaypointSeq(seqAt(waypoints, flown));
         task.setProgressPct(scale(Math.min(100.0, flown / routeDistance * 100)));
 
-        if (remain <= advance + ARRIVAL_TOLERANCE_M) {
+        if (motion.arrived()) {
             // 航路终点是充电站（自主补能改航）时，这里是"到站落桩"而不是"送达卸货"：
             // 若按送达处理，订单会被提前标记 DELIVERED，货物其实还在机上
             if (batteryRelay.isRelaying(task.getId())) {
+                flightDynamics.clear(drone.getId());
                 batteryRelay.beginCharging(task, drone, simTime, runId);
                 return false;
             }
-            // 抵达送货点：降落卸货
+            // 抵达送货点：降落卸货（悬停卸货的能量在这里一次性计入，之后由积分接管）
             task.setStatus(TaskStatus.DELIVERING);
             task.setProgressPct(scale(100));
             consume(drone, model, task, energyModel.hoverEnergyWh(model, payloadKg));
+            flightDynamics.clear(drone.getId());
             drone.setSpeedMps(BigDecimal.ZERO);
             drone.setAltitudeM(BigDecimal.ZERO);
             if (order != null && order.getStatus() == OrderStatus.IN_FLIGHT) {
@@ -464,138 +497,25 @@ public class SimulationTickService {
     }
 
     /**
-     * 写入无人机位置、航向、速度、高度。
+     * 写入无人机位置、航向、速度、高度（全部来自动力学积分结果）。
      *
-     * <p>高度不再直接等于巡航高度，而是由飞行剖面按当前航程位置算出 ——
-     * 这样看板上能看到飞机"爬上去、平飞、再降下来"，而不是一直贴在天花板上。
-     *
-     * <p>{@code noseBearingDeg} 是<b>机头朝向</b>（含侧风偏航角），不是航迹方向：
-     * 有侧风时飞机会"斜着飞"，地图上的朝向箭头略微偏离航线，这正是真实飞行姿态。
+     * <p>{@code heading} 是机头朝向（由空速矢量算出，含侧风偏航角），不是航迹方向：
+     * 有侧风时飞机会"斜着飞"，地图上的朝向箭头略微偏离航迹。
      */
-    private void updatePosition(Drone drone, GeoPoint position, double speed, double altitudeM,
-                                List<GeoPoint> polyline, double noseBearingDeg) {
-        double heading = noseBearingDeg;
-        if (!Double.isFinite(heading)) {
-            // 兜底：拿不到风修正时沿用"上一位置 → 当前位置"的航迹方向
-            if (drone.getCurrentLat() != null && drone.getCurrentLon() != null) {
-                heading = GeoUtils.bearingDegrees(drone.getCurrentLat(), drone.getCurrentLon(),
-                        position.lat(), position.lon());
-            } else {
-                int idx = Math.min(1, polyline.size() - 1);
-                heading = GeoUtils.bearingDegrees(position.lat(), position.lon(),
-                        polyline.get(idx).lat(), polyline.get(idx).lon());
-            }
-        }
-        drone.setCurrentLat(position.lat());
-        drone.setCurrentLon(position.lon());
-        drone.setHeadingDeg(scale(heading).setScale(2, RoundingMode.HALF_UP));
-        drone.setSpeedMps(BigDecimal.valueOf(speed).setScale(2, RoundingMode.HALF_UP));
-        drone.setAltitudeM(BigDecimal.valueOf(Math.max(0.0, altitudeM)).setScale(2, RoundingMode.HALF_UP));
+    private void updatePosition(Drone drone, FlightDynamics.Motion motion) {
+        drone.setCurrentLat(motion.lat());
+        drone.setCurrentLon(motion.lon());
+        drone.setHeadingDeg(BigDecimal.valueOf(motion.headingDeg()).setScale(2, RoundingMode.HALF_UP));
+        drone.setSpeedMps(BigDecimal.valueOf(motion.groundSpeedMps()).setScale(2, RoundingMode.HALF_UP));
+        drone.setAltitudeM(BigDecimal.valueOf(Math.max(0.0, motion.altitudeM()))
+                .setScale(2, RoundingMode.HALF_UP));
         drone.setLastHeartbeatAt(Instant.now());
         droneRepository.save(drone);
     }
 
     // ------------------------------------------------------------------
-    // 风场
+    // 航路辅助
     // ------------------------------------------------------------------
-
-    /**
-     * 计算当前航段的风修正。
-     *
-     * <p>航迹方向取"当前点 → 前方 50m"的方位角，而不是整段航线的方向：
-     * 绕飞航线是折线，取整段起点方向会让逆风分量算错。
-     */
-    private WindField.Adjustment windAt(List<GeoPoint> path, double flownM, double cruiseAltitudeM,
-                                        double cruiseSpeedMps, BigDecimal simTime) {
-        double bearing = trackBearing(path, flownM);
-        return windField.adjust(cruiseSpeedMps, bearing, cruiseAltitudeM,
-                simTime == null ? 0.0 : simTime.doubleValue());
-    }
-
-    /** 折线上"已飞 flownM 处"的前进方向（度）。 */
-    private double trackBearing(List<GeoPoint> path, double flownM) {
-        double total = GeoUtils.polylineLengthMeters(path);
-        double at = Math.max(0.0, Math.min(flownM, total));
-        GeoPoint a = GeoUtils.pointAtDistance(path, at);
-        GeoPoint b = GeoUtils.pointAtDistance(path, Math.min(at + 50.0, total));
-        if (a.distanceTo(b) < 0.5) {
-            // 已到终点：用末段方向兜底
-            GeoPoint end = GeoUtils.pointAtDistance(path, total);
-            GeoPoint prev = GeoUtils.pointAtDistance(path, Math.max(0.0, total - 50.0));
-            return GeoUtils.bearingDegrees(prev.lat(), prev.lon(), end.lat(), end.lon());
-        }
-        return GeoUtils.bearingDegrees(a.lat(), a.lon(), b.lat(), b.lon());
-    }
-
-    // ------------------------------------------------------------------
-    // 飞行剖面（垂直 + 速度）
-    // ------------------------------------------------------------------
-
-    /**
-     * 单段航程（去程或回程）的飞行剖面。
-     *
-     * <p>把一条航程拆成四段物理意义明确的区间：
-     * <pre>
-     *   0 ──爬升过渡── 巡航高度 ────────── 巡航高度 ──下降过渡── 0
-     *   速度：低 → 巡航 → 巡航 → 低（起降加减速）
-     * </pre>
-     * 爬升/下降的"水平过渡距离"不是拍脑袋，而是从**垂直速率**换算出来的：
-     * 爬 80 m 用 4 m/s 需要 20 s，这 20 s 里飞机以巡航速度前飞，
-     * 于是水平方向走 20 × 巡航速度（15 m/s）≈ 300 m。这就是它开始平飞的位置。
-     */
-    private record LegProfile(
-            double cruiseSpeed,
-            double cruiseAltitude,
-            double climbRunM,
-            double descentRunM,
-            double rampRunM
-    ) {
-        /** 本段已飞 covered、还剩 remaining 时的瞬时水平速度（米/秒）。 */
-        double speedAt(double coveredM, double remainingM) {
-            double factor = 1.0;
-            if (rampRunM > 1e-6) {
-                factor = Math.min(factor, MIN_SPEED_FACTOR + (1.0 - MIN_SPEED_FACTOR) * clamp01(coveredM / rampRunM));
-                factor = Math.min(factor, MIN_SPEED_FACTOR + (1.0 - MIN_SPEED_FACTOR) * clamp01(remainingM / rampRunM));
-            }
-            return cruiseSpeed * factor;
-        }
-
-        /** 本段已飞 covered、还剩 remaining 时的高度（米）。 */
-        double altitudeAt(double coveredM, double remainingM) {
-            double factor = 1.0;
-            if (climbRunM > 1e-6) {
-                factor = Math.min(factor, clamp01(coveredM / climbRunM));
-            }
-            if (descentRunM > 1e-6) {
-                factor = Math.min(factor, clamp01(remainingM / descentRunM));
-            }
-            return cruiseAltitude * factor;
-        }
-    }
-
-    /** 由机型巡航速度、巡航高度与本段长度组装飞行剖面。 */
-    private LegProfile buildLegProfile(double cruiseSpeed, double cruiseAltitudeM, double legDistanceM) {
-        double leg = Math.max(1.0, legDistanceM);
-        double climb = properties.flight().climbSpeedMps();
-        double descent = properties.flight().descentSpeedMps();
-
-        // 垂直速率 → 水平过渡距离；再用 45% 兜底，保证爬升与下降不会互相顶掉，
-        // 中间还留出至少 10% 的平飞段（短航线"来不及爬到顶就下降"也是真实行为）。
-        double climbRun = climb > 1e-6 ? cruiseAltitudeM / climb * cruiseSpeed : 0.0;
-        double descentRun = descent > 1e-6 ? cruiseAltitudeM / descent * cruiseSpeed : 0.0;
-        climbRun = Math.min(climbRun, leg * 0.45);
-        descentRun = Math.min(descentRun, leg * 0.45);
-
-        return new LegProfile(cruiseSpeed, cruiseAltitudeM, climbRun, descentRun,
-                properties.flight().speedRampM());
-    }
-
-    private static double clamp01(double value) {
-        if (value < 0.0) {
-            return 0.0;
-        }
-        return value > 1.0 ? 1.0 : value;
-    }
 
     /** 从航路点里取巡航高度；没有航路点时用配置默认值。 */
     private BigDecimal cruiseAltitude(List<FlightWaypoint> waypoints) {
@@ -636,11 +556,29 @@ public class SimulationTickService {
         }
     }
 
+    /** 地面等待：写入截止时刻与原因（供前端展示），同一任务只记一次事件。 */
+    private void holdOnGround(DispatchTask task, double untilSim, String reason,
+                              BigDecimal simTime, Long runId) {
+        task.setHoldUntilS(BigDecimal.valueOf(untilSim).setScale(2, RoundingMode.HALF_UP));
+        task.setHoldReason(reason.length() > 120 ? reason.substring(0, 120) : reason);
+        taskRepository.save(task);
+        if (groundHoldNotified.add(task.getId())) {
+            String message = String.format("任务 %s 地面等待：%s", task.getTaskNo(), reason);
+            eventService.simulation("GROUND_HOLD", message, runId, simTime);
+            log.info(message);
+        }
+    }
+
     /** 任务完成：飞机落回机巢、电量与里程入账、累计统计更新。 */
     private void completeTask(DispatchTask task, Drone drone, FlightRoute route,
                              DeliveryOrder order, BigDecimal simTime, Long runId) {
         rerouteRegistry.clear(task.getId());
         batteryRelay.forget(task.getId());
+        flightDynamics.clear(drone.getId());
+        chargingRegistry.release(drone.getId());
+        strategic.release(task.getId());
+        vertiports.landed(drone, simTime == null ? 0 : simTime.doubleValue());
+        groundHoldNotified.remove(task.getId());
         Instant now = Instant.now();
         task.setStatus(TaskStatus.COMPLETED);
         task.setFinishedAt(now);
@@ -690,6 +628,11 @@ public class SimulationTickService {
                                 BigDecimal simTime, Long runId) {
         rerouteRegistry.clear(task.getId());
         batteryRelay.forget(task.getId());
+        flightDynamics.clear(drone.getId());
+        chargingRegistry.release(drone.getId());
+        strategic.release(task.getId());
+        vertiports.landed(drone, simTime == null ? 0 : simTime.doubleValue());
+        groundHoldNotified.remove(task.getId());
         task.setStatus(TaskStatus.FAILED);
         task.setFailReason("电量低于安全冗余 " + properties.dispatch().minBatteryReservePct() + "%，强制中止");
         task.setFinishedAt(Instant.now());
@@ -714,6 +657,11 @@ public class SimulationTickService {
     private void failTask(DispatchTask task, Drone drone, String reason, BigDecimal simTime, Long runId) {
         rerouteRegistry.clear(task.getId());
         batteryRelay.forget(task.getId());
+        flightDynamics.clear(drone.getId());
+        chargingRegistry.release(drone.getId());
+        strategic.release(task.getId());
+        vertiports.landed(drone, simTime == null ? 0 : simTime.doubleValue());
+        groundHoldNotified.remove(task.getId());
         task.setStatus(TaskStatus.FAILED);
         task.setFailReason(reason);
         task.setFinishedAt(Instant.now());

@@ -73,7 +73,7 @@ export type TaskStatus =
   | 'FAILED'
 
 export type Priority = 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT'
-export type ZoneType = 'NO_FLY' | 'RESTRICTED' | 'CORRIDOR' | 'WARNING' | 'BUILDING'
+export type ZoneType = 'NO_FLY' | 'RESTRICTED' | 'CORRIDOR' | 'WARNING' | 'BUILDING' | 'TERRAIN'
 export type ZoneShape = 'CIRCLE' | 'POLYGON'
 export type ConflictType = 'DRONE_DRONE' | 'DRONE_ZONE' | 'DEADLINE_RISK' | 'BATTERY_RISK'
 export type ConflictSeverity = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
@@ -98,6 +98,8 @@ export interface Order {
   pickup: GeoDto
   dropoff: GeoDto
   expectDeliveryAt?: string
+  /** 实际送达时间（准时率口径，区别于任务完成时间） */
+  deliveredAt?: string
   assignedDroneId?: number
   failReason?: string
   remark?: string
@@ -190,6 +192,9 @@ export interface AirspaceZone {
   enabled?: boolean
   effectiveFrom?: string
   effectiveTo?: string
+  /** 仿真时间窗（秒）：临时管制区到点自动生效/解除 */
+  activeFromSimSec?: number
+  activeToSimSec?: number
   remark?: string
 }
 
@@ -209,8 +214,101 @@ export interface ChargingStation {
   lon: number
   /** 可同时补能的桩位数 */
   chargeSlots: number
+  /** 当前正在充电的架数（实时） */
+  occupancy?: number
+  /** 当前排队等待的架数（实时） */
+  queueLength?: number
   enabled?: boolean
   remark?: string
+}
+
+// ---------------------------------------------------------------------------
+// 基础设施（充电站运行态 / 机巢 / 战略时隙）
+// ---------------------------------------------------------------------------
+
+/** 充电站实时视图：桩位、排队与预计等待。 */
+export interface InfrastructureStation {
+  id: number
+  code: string
+  name: string
+  city: string
+  lat: number
+  lon: number
+  chargeSlots: number
+  occupancy: number
+  queueLength: number
+  estimatedWaitSeconds: number
+  enabled?: boolean
+  remark?: string
+}
+
+/** 机巢站点：每站独立坪位/周转配置 + 当前运行态。 */
+export interface InfrastructureVertiport {
+  id: number
+  code: string
+  name: string
+  siteKey: string
+  lat: number
+  lon: number
+  slots: number
+  turnaroundSeconds: number
+  basedDrones: number
+  busyDrones: number
+  turnaroundDrones: number
+  nextFreeInSeconds: number
+}
+
+/** 战略时隙里的一个占用者。 */
+export interface StrategicSlotOccupant {
+  taskId: number
+  taskNo: string
+  droneCode?: string
+  orderId: number
+}
+
+/** 一条「走廊扇区 + 高度层」的时隙。 */
+export interface StrategicSlot {
+  key: string
+  sector: string
+  layerM: number
+  startSimSec: number
+  endSimSec: number
+  capacity: number
+  occupants: StrategicSlotOccupant[]
+}
+
+/** 战略时隙快照（只读）。 */
+export interface StrategicSlotSnapshot {
+  enabled: boolean
+  slotSeconds: number
+  departuresPerSlot: number
+  slots: StrategicSlot[]
+}
+
+/** 基础设施总览。 */
+export interface InfrastructureOverview {
+  ts: string
+  simTimeS: number
+  summary: {
+    stationCount: number
+    totalChargeSlots: number
+    chargingDrones: number
+    queuedDrones: number
+    estimatedMaxWaitSeconds: number
+    vertiportCount: number
+    totalPads: number
+    busyVertiports: number
+    slotOccupancy: number
+    slotCapacity: number
+  }
+  stations: InfrastructureStation[]
+  vertiports: InfrastructureVertiport[]
+  slots: StrategicSlotSnapshot
+}
+
+export interface VertiportUpdateRequest {
+  slots?: number
+  turnaroundSeconds?: number
 }
 
 export interface ZoneCreateRequest {
@@ -228,6 +326,9 @@ export interface ZoneCreateRequest {
   /** 严重度，可留空 —— 留空时按区域类型取默认值（禁飞区最严，走廊最松） */
   severity?: ConflictSeverity
   enabled?: boolean
+  /** 仿真时间窗（秒）：留空表示长期有效 */
+  activeFromSimSec?: number
+  activeToSimSec?: number
   remark?: string
 }
 
@@ -257,6 +358,9 @@ export interface DispatchTask {
   startedAt?: string
   finishedAt?: string
   durationS?: number
+  /** 地面等待截止仿真秒（战略时隙/机巢周转），起飞后清空 */
+  holdUntilS?: number | null
+  holdReason?: string | null
   failReason?: string
 }
 
@@ -395,6 +499,16 @@ export interface DroneFrame {
   batteryPct?: number
   progressPct?: number
   waypointSeq?: number
+  /** 观测采样时刻（延迟/陈旧时早于当前时刻） */
+  observedAt?: string
+  /** 观测延迟（用了上一拍数据） */
+  delayed?: boolean
+  /** 丢包后沿用的陈旧帧 */
+  stale?: boolean
+  /** 通信中断（失联） */
+  commLost?: boolean
+  /** GPS 漂移 */
+  gpsDrift?: boolean
   ts: string
 }
 
@@ -478,6 +592,24 @@ export interface TickResult {
   movedDrones: number
   completedTasks: number
   newConflicts: number
+  message: string
+}
+
+/** 可人工注入的飞行故障类型。 */
+export type FaultType = 'BATTERY_DROP' | 'POWER_LOSS' | 'COMM_LOSS' | 'GPS_DRIFT'
+
+export interface FaultRequest {
+  droneId: number
+  type: FaultType
+  /** 仅 BATTERY_DROP 使用：压降百分点，缺省 15 */
+  batteryDropPct?: number
+}
+
+export interface FaultResponse {
+  droneId: number
+  droneCode: string
+  type: FaultType
+  batteryDropPct: number
   message: string
 }
 

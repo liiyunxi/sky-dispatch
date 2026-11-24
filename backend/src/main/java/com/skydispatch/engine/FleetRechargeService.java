@@ -33,10 +33,14 @@ public class FleetRechargeService {
     private static final Logger log = LoggerFactory.getLogger(FleetRechargeService.class);
 
     private final DroneRepository droneRepository;
+    private final ChargingStationRegistry chargingRegistry;
     private final SkyProperties properties;
 
-    public FleetRechargeService(DroneRepository droneRepository, SkyProperties properties) {
+    public FleetRechargeService(DroneRepository droneRepository,
+                                ChargingStationRegistry chargingRegistry,
+                                SkyProperties properties) {
         this.droneRepository = droneRepository;
+        this.chargingRegistry = chargingRegistry;
         this.properties = properties;
     }
 
@@ -74,7 +78,7 @@ public class FleetRechargeService {
                 continue;
             }
 
-            double next = Math.min(target, battery + gain);
+            double next = Math.min(target, battery + gain * chargingRegistry.powerFactor(battery));
             drone.setBatteryPct(BigDecimal.valueOf(next).setScale(2, RoundingMode.HALF_UP));
 
             // 维护中的飞机充到恢复阈值即回到可调度；IDLE 机补能期间保持可接单（在桩待命）

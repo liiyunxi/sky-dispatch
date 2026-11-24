@@ -82,6 +82,9 @@ sky:
     climb-speed-mps: 4.0
     descent-speed-mps: 3.0
     speed-ramp-m: 80.0
+    # 巡航高度层：按无人机编号轮转分配，跨层飞行互不构成水平冲突
+    # 18m 间隔 > 冲突检测的 15m 垂直间隔；最高层 116m 仍在 X4 的 120m 升限内
+    altitude-layers-m: [62, 80, 98, 116]
 
   # 能耗模型：非线性功率曲线 P(v) = P_hover·(m/m0)^1.5 + B·v³
   # 每公里能耗随速度、载重非线性变化；B 由额定巡航点反解，参数表标定值仍然有效
@@ -90,6 +93,52 @@ sky:
     airframe-mass-ratio: 2.5    # 空机质量 / 最大载重（5kg 载重对应约 12.5kg 机身）
     min-speed-factor: 0.30      # 每公里能耗计算时的最低速度系数，避免 v→0 发散
     takeoff-landing-seconds: 60 # 一次起降的悬停时间
+
+  # 飞行动力学：位置由速度积分产生（不再按已飞距离插值）
+  # 速度指令 → 加速度受限 → 地速积分；爬升/转弯/刹车/逆风漂移都是"飞出来"的
+  dynamics:
+    max-accel-mps2: 2.5         # 水平最大加速度
+    speed-gain-per-sec: 0.9     # 速度误差 → 加速度的增益
+    lookahead-m: 120.0          # 航路跟随前视距离
+    integration-step-s: 0.5     # 积分子步长（8 倍速下也不会振荡）
+    arrival-radius-m: 2.0       # 到达判定半径
+    arrival-speed-mps: 1.5      # 到达判定速度上限
+
+  # 充电曲线：低 SOC 恒流，高 SOC 恒压衰减
+  charging:
+    taper-start-pct: 80.0       # 超过该电量进入恒压段
+    taper-end-factor: 0.35      # 100% 时的充电功率系数
+
+  # 机巢/起降坪：容量与地面周转
+  vertiport:
+    slots-per-site: 4           # 每个起降点停机位
+    turnaround-seconds: 45      # 降落后检查/装卸/换电，期间不能再次起飞
+    operation-seconds: 15       # 一次起降占用起降坪的时间
+
+  # 战略层去冲突：起飞时隙（按走廊扇区 + 高度层预约）
+  strategic:
+    enabled: true
+    slot-seconds: 15.0
+    departures-per-slot: 2
+
+  # 故障注入（默认关；dev 可在 dev profile 打开小概率）
+  fault:
+    enabled: ${SKY_FAULT_ENABLED:false}
+    battery-drop-rate-per-drone-min: 0.004
+    power-loss-rate-per-drone-min: 0.0002
+    comm-loss-rate-per-drone-min: 0.002
+    gps-drift-rate-per-drone-min: 0.002
+    comm-loss-seconds: 20.0
+    gps-drift-meters: 15.0
+
+  # 遥测观测：真值与对外观测分离
+  telemetry:
+    noise-enabled: true
+    position-noise-m: 3.0
+    altitude-noise-m: 0.8
+    drop-rate: 0.015
+    delay-ticks: 1
+    battery-noise-pct: 0.5
 
   # 风场：让"逆风延误、迎风多耗电、侧风偏航"成为仿真的一部分
   # 模型是确定性的（全部由 simTime 推导），同一段仿真重跑结果一致

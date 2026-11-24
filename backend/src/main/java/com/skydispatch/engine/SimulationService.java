@@ -33,13 +33,25 @@ public class SimulationService {
 
     private final SimulationRunRepository runRepository;
     private final SimulationRuntimeState runtimeState;
+    private final ChargingStationRegistry chargingRegistry;
+    private final VertiportService vertiports;
+    private final StrategicDeconflictionService strategic;
+    private final FaultInjectionService faultInjection;
     private final SkyProperties properties;
 
     public SimulationService(SimulationRunRepository runRepository,
                            SkyProperties properties,
-                           SimulationRuntimeState runtimeState) {
+                           SimulationRuntimeState runtimeState,
+                           ChargingStationRegistry chargingRegistry,
+                           VertiportService vertiports,
+                           StrategicDeconflictionService strategic,
+                           FaultInjectionService faultInjection) {
         this.runRepository = runRepository;
         this.runtimeState = runtimeState;
+        this.chargingRegistry = chargingRegistry;
+        this.vertiports = vertiports;
+        this.strategic = strategic;
+        this.faultInjection = faultInjection;
         this.properties = properties;
     }
 
@@ -61,6 +73,7 @@ public class SimulationService {
         if (!runtimeState.isEngineActive()) {
             return null;
         }
+        clearRuntimeState("自动新建运行");
         return createNewRun(new SimulationDtos.StartRequest("默认仿真运行", null, null, null));
     }
 
@@ -73,6 +86,7 @@ public class SimulationService {
     @Transactional
     public SimulationRun start(SimulationDtos.StartRequest request) {
         stopAllActive("被新的仿真运行替换");
+        clearRuntimeState("新建运行");
         runtimeState.resume("新建运行");
         return createNewRun(request);
     }
@@ -167,6 +181,21 @@ public class SimulationService {
         log.info("启动仿真运行: id={}, name={}, tick={}ms, 倍速={}x",
                 saved.getId(), saved.getName(), saved.getTickMs(), saved.getSpeedFactor());
         return saved;
+    }
+
+    /**
+     * 清空本次演练的内存运行态。
+     *
+     * <p>这些状态不落库：充电桩占用/排队、机巢放行节奏与单机周转、
+     * 战略时隙预约、故障持续状态。如果新建运行时不清理，上一次演练的
+     * "桩位被占、时隙被订、通信还断着"会残留到新运行，表现为新运行一开始就莫名排队。
+     */
+    private void clearRuntimeState(String reason) {
+        chargingRegistry.clearAll();
+        vertiports.clearAll();
+        strategic.clearAll();
+        faultInjection.clearAll();
+        log.info("已清空仿真运行态（{}）：充电占用/排队、机巢周转、战略时隙、故障状态", reason);
     }
 
     private void stopAllActive(String reason) {

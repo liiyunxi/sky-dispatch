@@ -172,6 +172,10 @@ public class OrderService {
     public void markStatus(DeliveryOrder order, OrderStatus target) {
         requireTransitionAllowed(order.getStatus(), target);
         order.setStatus(target);
+        // 送达时刻单独落库：准时率用它，而不是任务完成（含返航）的时间
+        if (target == OrderStatus.DELIVERED && order.getDeliveredAt() == null) {
+            order.setDeliveredAt(java.time.Instant.now());
+        }
         orderRepository.save(order);
     }
 

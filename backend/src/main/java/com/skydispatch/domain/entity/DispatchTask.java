@@ -121,6 +121,19 @@ public class DispatchTask {
     private String failReason;
 
     /**
+     * 地面等待截止仿真时刻（秒）：等战略时隙或机巢周转时写入。
+     *
+     * <p>只写事件流不够——前端任务卡只看到"已分配但不动"，
+     * 必须能直接展示"在等什么、等到什么时候"。
+     */
+    @Column(name = "hold_until_s")
+    private BigDecimal holdUntilS;
+
+    /** 地面等待原因（战略时隙 / 机巢周转 / 起降坪繁忙）。 */
+    @Column(name = "hold_reason", length = 128)
+    private String holdReason;
+
+    /**
      * 乐观锁版本号。
      *
      * <p>仿真推进与"人工中止"可能同时改同一条任务，版本号让后提交的一方失败，

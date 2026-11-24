@@ -352,6 +352,7 @@ const ZONE_COLOR: Record<ZoneType, number> = {
   NO_FLY: 0xff4d4f,
   RESTRICTED: 0xfa8c16,
   BUILDING: 0x64748b,
+  TERRAIN: 0x8c5a2b,
   CORRIDOR: 0x52c41a,
   WARNING: 0xfaad14,
 }
