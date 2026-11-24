@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs from 'dayjs'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   AimOutlined,
   CopyOutlined,
@@ -53,6 +53,7 @@ import {
  */
 
 const router = useRouter()
+const route = useRoute()
 const { drones, kpi } = useTelemetry()
 
 const loading = ref(false)
@@ -569,6 +570,13 @@ const waypointColumns = [
 // ---------------------------------------------------------------------------
 
 onMounted(() => {
+  // 从机队页「在任务页查看该机全部任务」跳转过来：带上无人机筛选
+  const raw = route.query.droneId
+  const droneId = Number(Array.isArray(raw) ? raw[0] : raw)
+  if (Number.isFinite(droneId) && droneId > 0) {
+    query.droneId = droneId
+    pagination.current = 1
+  }
   void loadTasks()
   void loadStats()
   startAutoRefresh()
