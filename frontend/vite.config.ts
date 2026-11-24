@@ -31,6 +31,18 @@ function friendlyProxy(target: string, ws = false): ProxyOptions {
     changeOrigin: true,
     ws,
     configure(proxy) {
+      // 通过公网隧道访问时，浏览器会带 Origin（如 https://xxx.trycloudflare.com）。
+      // 本地后端只放行了 localhost 的 CORS，会直接 403；
+      // 这里把 Origin/Referer 去掉，让请求以同源身份到达后端。
+      // 生产部署由 Spring Boot 直接托管前端，不存在这个代理层。
+      proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+        proxyReq.removeHeader('referer')
+      })
+      proxy.on('proxyReqWs', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+        proxyReq.removeHeader('referer')
+      })
       proxy.on('error', (err, _req, res) => {
         // WebSocket 升级阶段没有可写的 HTTP 响应，只在控制台留痕
         if (!res || typeof (res as { writeHead?: unknown }).writeHead !== 'function') {
@@ -63,6 +75,8 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '127.0.0.1',
+    // 允许免费临时隧道域名访问（仅开发调试用）
+    allowedHosts: ['.trycloudflare.com', '.lhr.life'],
     proxy: {
       // REST 接口转发。后端不可达时由 friendlyProxy 返回明确的 JSON 提示
       '/api': friendlyProxy(BACKEND_TARGET),
