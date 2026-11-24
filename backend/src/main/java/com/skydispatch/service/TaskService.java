@@ -20,7 +20,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 任务服务：任务查询、航路点查询、中止任务。
@@ -58,19 +60,66 @@ public class TaskService {
     /** 分页查询任务，可按状态或无人机过滤。 */
     @Transactional(readOnly = true)
     public CommonDtos.PageResponse<TaskDtos.Response> list(TaskStatus status, Long droneId, Pageable pageable) {
+        return list(status, null, droneId, pageable);
+    }
+
+    /**
+     * 分页查询任务（支持按状态集合过滤）。
+     *
+     * <p>任务指挥台的「飞行阶段」一次代表多个状态（例如"巡航投送" =
+     * CRUISING + DELIVERING），走后端筛选才能保证分页总数正确。
+     * statuses 非空时优先于单个 status；droneId 与两者都可以叠加。
+     */
+    @Transactional(readOnly = true)
+    public CommonDtos.PageResponse<TaskDtos.Response> list(TaskStatus status, List<TaskStatus> statuses,
+                                                           Long droneId, Pageable pageable) {
+        boolean hasStatuses = statuses != null && !statuses.isEmpty();
         Page<DispatchTask> page;
-        if (droneId != null) {
+        if (droneId != null && hasStatuses) {
+            page = taskRepository.findByDroneIdAndStatusIn(droneId, statuses, pageable);
+        } else if (droneId != null && status != null) {
+            page = taskRepository.findByDroneIdAndStatus(droneId, status, pageable);
+        } else if (droneId != null) {
             page = taskRepository.findByDroneId(droneId, pageable);
+        } else if (hasStatuses) {
+            page = taskRepository.findByStatusIn(statuses, pageable);
         } else if (status != null) {
             page = taskRepository.findByStatus(status, pageable);
         } else {
             page = taskRepository.findAll(pageable);
         }
         List<TaskDtos.Response> content = page.getContent().stream()
-                .filter(t -> status == null || t.getStatus() == status)
                 .map(this::toResponse)
                 .toList();
         return CommonDtos.PageResponse.of(content, page);
+    }
+
+    /**
+     * 任务态势统计：各状态任务数 + 活动任务数。
+     *
+     * <p>返回 map 里补齐全部枚举（缺失状态补 0），前端不需要为"某个阶段是 0"
+     * 做额外兜底；活动任务的口径与 {@link TaskStatus#isActive()} 一致。
+     */
+    @Transactional(readOnly = true)
+    public TaskDtos.Stats stats() {
+        Map<String, Long> byStatus = new LinkedHashMap<>();
+        for (TaskStatus status : TaskStatus.values()) {
+            byStatus.put(status.name(), 0L);
+        }
+        long total = 0;
+        for (Object[] row : taskRepository.countGroupByStatus()) {
+            TaskStatus status = (TaskStatus) row[0];
+            long count = ((Number) row[1]).longValue();
+            byStatus.put(status.name(), count);
+            total += count;
+        }
+        long active = 0;
+        for (TaskStatus status : TaskStatus.values()) {
+            if (status.isActive()) {
+                active += byStatus.getOrDefault(status.name(), 0L);
+            }
+        }
+        return new TaskDtos.Stats(total, active, byStatus);
     }
 
     /** 任务详情。 */

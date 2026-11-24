@@ -45,6 +45,24 @@ public interface DispatchTaskRepository extends JpaRepository<DispatchTask, Long
     /** 按状态集合查询，如一次取出全部活动中的任务。 */
     List<DispatchTask> findByStatusIn(Collection<TaskStatus> statuses);
 
+    /** 按状态集合分页查询：任务指挥台的「飞行阶段」一次筛选多个状态。 */
+    Page<DispatchTask> findByStatusIn(Collection<TaskStatus> statuses, Pageable pageable);
+
+    /** 按无人机 + 状态分页查询（两个筛选条件同时生效）。 */
+    Page<DispatchTask> findByDroneIdAndStatus(Long droneId, TaskStatus status, Pageable pageable);
+
+    /** 按无人机 + 状态集合分页查询。 */
+    Page<DispatchTask> findByDroneIdAndStatusIn(Long droneId, Collection<TaskStatus> statuses, Pageable pageable);
+
+    /**
+     * 按状态分组计数：一次查询拿到任务指挥台全部阶段的读数。
+     *
+     * <p>任务量随时间线性增长，逐状态发 count 会让首屏随历史数据变慢；
+     * GROUP BY 只扫一次索引。
+     */
+    @Query("select t.status, count(t) from DispatchTask t group by t.status")
+    List<Object[]> countGroupByStatus();
+
     /** 查某架无人机在指定状态集合下的任务，用于判断它是否还有未结束的活儿。 */
     List<DispatchTask> findByDroneIdAndStatusIn(Long droneId, Collection<TaskStatus> statuses);
 

@@ -25,6 +25,7 @@ import type {
   SimulationRuntimeState,
   Snapshot,
   TaskStatus,
+  TaskStatusStats,
   TickResult,
   Waypoint,
   ZoneCreateRequest,
@@ -122,11 +123,19 @@ export const dispatchApi = {
 // 任务
 // ---------------------------------------------------------------------------
 export const taskApi = {
-  list: (params: { status?: TaskStatus; droneId?: number; page?: number; size?: number }) =>
-    http.get<PageResponse<DispatchTask>>('/tasks', params),
+  list: (params: {
+    status?: TaskStatus
+    /** 逗号分隔的状态集合（Spring 自动解析），用于任务指挥台的飞行阶段筛选 */
+    statuses?: string
+    droneId?: number
+    page?: number
+    size?: number
+  }) => http.get<PageResponse<DispatchTask>>('/tasks', params),
+  /** 任务态势：各状态任务数 + 活动任务数 */
+  stats: () => http.get<TaskStatusStats>('/tasks/stats', undefined, true),
   get: (id: number) => http.get<DispatchTask>(`/tasks/${id}`),
   waypoints: (id: number) => http.get<Waypoint[]>(`/tasks/${id}/waypoints`),
-  events: (id: number) => http.get<EventLogItem[]>(`/tasks/${id}/events`),
+  events: (id: number) => http.get<EventLogItem[]>(`/tasks/${id}/events`, undefined, true),
   abort: (id: number, reason?: string) => http.post<DispatchTask>(`/tasks/${id}/abort`, { reason }),
 }
 

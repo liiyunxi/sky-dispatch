@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 import dayjs, { type Dayjs } from 'dayjs'
+import { useRoute } from 'vue-router'
 import {
   AimOutlined,
   ClockCircleOutlined,
@@ -81,6 +82,7 @@ const filterPriority = ref<Priority | undefined>(undefined)
 // ---------------------------------------------------------------------------
 
 const { kpi: liveKpi, drones } = useTelemetry()
+const route = useRoute()
 
 /** WebSocket 还没推 KPI 时用 REST 兜底，保证首屏流水线不留空白 */
 const fallbackKpi = ref<Kpi | null>(null)
@@ -797,7 +799,30 @@ onMounted(() => {
   void loadOrders()
   void loadZones()
   void loadFallbackKpi()
+  void openTraceFromRoute()
 })
+
+/**
+ * 从任务页「订单链路」跳转过来时自动打开对应订单的追踪抽屉。
+ *
+ * <p>任务页知道 orderId，但用户关心的是整条订单链路（下单→派单→任务→事件）；
+ * 直接用 trace 接口拿快照，省掉"先查订单再查链路"的两次请求。
+ */
+async function openTraceFromRoute(): Promise<void> {
+  const raw = route.query.traceOrderId
+  const id = Number(Array.isArray(raw) ? raw[0] : raw)
+  if (!Number.isFinite(id) || id <= 0) return
+  try {
+    const snapshot = await orderApi.trace(id)
+    trace.value = snapshot
+    traceOrder.value = snapshot.order
+    traceTab.value = 'timeline'
+    traceOpen.value = true
+    startTraceTimer()
+  } catch {
+    /* 已提示 */
+  }
+}
 
 /** WebSocket 尚未推 KPI 时的兜底：只拉一次，之后由实时通道接管 */
 async function loadFallbackKpi(): Promise<void> {

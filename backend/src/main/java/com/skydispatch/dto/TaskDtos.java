@@ -140,7 +140,7 @@ public final class TaskDtos {
             double distanceToPickupM,
             BigDecimal batteryPct,
             BigDecimal usableEnergyWh,
-            /** 完整任务（含补能绕行）的实际飞行能耗；直飞时即调机+去程载货+回程。 */
+            /** 完整任务（含补能绕行）的实际飞行能耗；直飞时即调机 + 去程载货 + 回程。 */
             BigDecimal missionEnergyWh,
             /** 中途补能次数；0 表示直飞可达。 */
             int chargingStops,
@@ -151,6 +151,20 @@ public final class TaskDtos {
             long activeTaskCount,
             BigDecimal score,
             int rank
+    ) {
+    }
+
+    /**
+     * 任务态势统计：任务指挥台顶部"各阶段有多少任务"的读数。
+     *
+     * <p>byStatus 的 key 是 {@link TaskStatus} 的枚举名，前端按飞行阶段分组求和；
+     * 一次 GROUP BY 查询返回全部计数，任务量增长后也不会随拍数发多条 count。
+     */
+    public record Stats(
+            long total,
+            /** 占用无人机的活动任务数（ASSIGNED/TAKEOFF/CRUISING/DELIVERING/RETURNING/CHARGING）。 */
+            long active,
+            java.util.Map<String, Long> byStatus
     ) {
     }
 }

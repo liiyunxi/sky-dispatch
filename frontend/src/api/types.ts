@@ -260,6 +260,15 @@ export interface DispatchTask {
   failReason?: string
 }
 
+export interface TaskStatusStats {
+  /** 任务总数 */
+  total: number
+  /** 占用无人机的活动任务数 */
+  active: number
+  /** 各状态任务数，key 为 TaskStatus 枚举名（后端补齐全部状态，缺失为 0） */
+  byStatus: Record<string, number>
+}
+
 export interface Waypoint {
   seq: number
   lat: number

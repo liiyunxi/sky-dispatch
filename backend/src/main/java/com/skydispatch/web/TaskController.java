@@ -8,6 +8,7 @@ import com.skydispatch.service.TaskService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -37,12 +38,19 @@ public class TaskController {
     }
 
     @GetMapping
-    @Operation(summary = "分页查询任务", description = "可按状态或无人机过滤")
+    @Operation(summary = "分页查询任务", description = "可按状态、状态集合或无人机过滤")
     public ApiResponse<CommonDtos.PageResponse<TaskDtos.Response>> list(
             @RequestParam(required = false) TaskStatus status,
+            @RequestParam(required = false) List<TaskStatus> statuses,
             @RequestParam(required = false) Long droneId,
-            @PageableDefault(size = 20, sort = "id") Pageable pageable) {
-        return ApiResponse.ok(taskService.list(status, droneId, pageable));
+            @PageableDefault(size = 20, sort = "id", direction = Sort.Direction.DESC) Pageable pageable) {
+        return ApiResponse.ok(taskService.list(status, statuses, droneId, pageable));
+    }
+
+    @GetMapping("/stats")
+    @Operation(summary = "任务态势统计", description = "各状态任务数与活动任务数，任务指挥台顶部读数")
+    public ApiResponse<TaskDtos.Stats> stats() {
+        return ApiResponse.ok(taskService.stats());
     }
 
     @GetMapping("/{id}")
