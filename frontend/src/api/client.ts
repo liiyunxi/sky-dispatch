@@ -163,6 +163,9 @@ export const http = {
     request<T>(path, { method: 'GET', params, silent }),
   post: <T>(path: string, body?: unknown, params?: RequestOptions['params']) =>
     request<T>(path, { method: 'POST', body, params }),
+  /** 静默 POST：错误由调用方自己展示（登录页用，避免全局弹窗与行内提示重复） */
+  postSilent: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'POST', body, silent: true }),
   patch: <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   download,

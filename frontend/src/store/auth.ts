@@ -21,7 +21,11 @@ const username = ref(getUsername())
 const authenticated = computed(() => Boolean(token.value))
 
 async function login(user: string, password: string): Promise<void> {
-  const data = await http.post<LoginResponse>('/auth/login', { username: user, password })
+  // 静默请求：登录页会把错误渲染成行内提示，不需要全局 message 再弹一次
+  const data = await http.postSilent<LoginResponse>('/auth/login', {
+    username: user,
+    password,
+  })
   setAuth(data.token, data.username, data.expiresAt)
   token.value = data.token
   username.value = data.username
